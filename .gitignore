@@ -1,0 +1,49 @@
+# Dependencies
+node_modules/
+.npm/
+
+# Build outputs
+dist/
+src-tauri/target/
+*.tsbuildinfo
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.mobileprovision
+notary-profile*
+*.notary.json
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Test / coverage
+coverage/
+.nyc_output/
+
+# Tauri / packaging
+src-tauri/gen/schemas/
+*.app
+*.dmg
+*.AppImage
+*.deb
+*.rpm
+*.exe
+*.msi
+
+# Agent / local tooling
+.orca/
+.worktrees/
+*.log
+
+# Lockfile note: package-lock.json IS committed when present.
+# Cargo.lock IS committed for binary crates.

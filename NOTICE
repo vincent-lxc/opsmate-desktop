@@ -1,0 +1,27 @@
+OpsMate Desktop
+Copyright (c) 2026 OpsMate. All rights reserved.
+
+This product includes software developed by third parties. Private-stage
+binaries and source remain proprietary (see LICENSE). A full third-party
+license audit is required before any public open-source release.
+
+Major runtime / build dependencies (pinned in package.json / Cargo.toml):
+
+JavaScript / npm
+  - React, React DOM (MIT) — Meta Platforms, Inc.
+  - React Router DOM (MIT)
+  - Vite (MIT)
+  - Vitest (MIT)
+  - TypeScript (Apache-2.0)
+  - Testing Library packages (MIT)
+  - @tauri-apps/api, @tauri-apps/cli (Apache-2.0 OR MIT)
+
+Rust / crates
+  - tauri, tauri-build (Apache-2.0 OR MIT)
+  - serde, serde_json (MIT OR Apache-2.0)
+
+Icons and branding assets remaining under OpsMate ownership are not licensed
+for third-party redistribution under this private-stage NOTICE.
+
+For complete transitive license data, generate SBOM artifacts in CI
+(CycloneDX for npm and Cargo) when the CI task lands.
