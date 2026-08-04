@@ -4,19 +4,23 @@
 //! - WebView gets `core:default` only (no shell / opener / deep-link / stronghold).
 //! - opener + deep-link plugins are registered for **Rust** only.
 //! - Public auth IPC: `auth_begin_logto`, `auth_session_status`, `auth_logout`.
-//! - Cloud transport is allowlist-only (`cloud_transport::operations`); full HTTPS later.
-//! - Auth IPC errors are fixed public codes only (never raw HTTP/IdP/callback text).
+//! - Public cloud IPC: `cloud_call` (operationId + business input only; no bearer/URL).
+//! - CSP `connect-src 'self'` — WebView still has no network access (Rust owns HTTPS).
+//! - Auth/cloud IPC errors are fixed public codes only (never raw HTTP/IdP/callback text).
 
 pub mod auth;
+pub mod cloud_bridge;
 pub mod cloud_transport;
+pub mod security_cutoff;
 
 use auth::{
-    map_auth_public, perform_begin_logto_arc, perform_handle_deep_link, perform_logout,
-    perform_session_status, AuthBeginResponse, AuthError, AuthStore, BrowserOpener,
-    SecRandomSource, SessionStatus, TokioAuthHttp,
+    map_auth_public, perform_begin_logto_arc, perform_handle_deep_link, perform_session_status,
+    AuthBeginResponse, AuthError, AuthStore, BrowserOpener, SecRandomSource, SessionStatus,
+    TokioAuthHttp,
 };
+use cloud_bridge::{map_cloud_public, CloudBridge, CloudCallArgs, SessionInvalidatedEmitter};
 use std::sync::Arc;
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_deep_link::DeepLinkExt;
 use tauri_plugin_opener::OpenerExt;
 
@@ -38,6 +42,18 @@ fn map_auth(e: AuthError) -> String {
     map_auth_public(e)
 }
 
+/// Tauri secret-free session-invalidated emitter (required, not optional).
+struct TauriSessionEmitter {
+    app: AppHandle,
+}
+
+impl SessionInvalidatedEmitter for TauriSessionEmitter {
+    fn emit_session_invalidated(&self) {
+        // Empty payload — no token/URL/body/epoch.
+        let _ = self.app.emit("session-invalidated", ());
+    }
+}
+
 /// Start Logto PKCE login in the system browser. Response is secret-free.
 #[tauri::command]
 fn auth_begin_logto(
@@ -57,10 +73,23 @@ fn auth_session_status(store: State<'_, Arc<AuthStore>>) -> Result<SessionStatus
     perform_session_status(store.inner()).map_err(map_auth)
 }
 
-/// Clear native session + pending PKCE.
+/// Logout: cancel cloud → clear auth → SSH cutoff → vault lock.
 #[tauri::command]
-fn auth_logout(store: State<'_, Arc<AuthStore>>) -> Result<(), String> {
-    perform_logout(store.inner()).map_err(map_auth)
+fn auth_logout(cloud: State<'_, Arc<CloudBridge>>) -> Result<(), String> {
+    cloud.inner().perform_secure_logout().map_err(map_auth)
+}
+
+/// Named business cloud call. Input: operationId + JSON business fields only.
+#[tauri::command]
+async fn cloud_call(
+    cloud: State<'_, Arc<CloudBridge>>,
+    args: CloudCallArgs,
+) -> Result<serde_json::Value, String> {
+    cloud
+        .inner()
+        .call(&args.operation_id, &args.input)
+        .await
+        .map_err(map_cloud_public)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -68,20 +97,34 @@ pub fn run() {
     let auth_store = Arc::new(AuthStore::new());
 
     tauri::Builder::default()
-        // Rust-only plugins — capabilities must NOT grant WebView opener/deep-link perms.
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_deep_link::init())
         .manage(auth_store.clone())
         .setup({
             let auth_store = auth_store.clone();
             move |app| {
+                // Build CloudBridge only after AppHandle exists (required emitter).
+                let emitter: Arc<dyn SessionInvalidatedEmitter> = Arc::new(TauriSessionEmitter {
+                    app: app.handle().clone(),
+                });
+                let cloud = CloudBridge::new(auth_store.clone(), emitter).map_err(|_| {
+                    // Fixed public setup error — no raw client text.
+                    "cloud_setup_failed"
+                })?;
+                let cloud = Arc::new(cloud);
+                app.manage(cloud.clone());
+
+                // Deep-link after emitter/cloud managed: success → session transition cutoffs.
                 let store = auth_store.clone();
+                let cloud_dl = cloud.clone();
                 app.deep_link().on_open_url(move |event| {
                     for u in event.urls() {
-                        // Never log the raw deep-link URL (contains code/state).
                         let s = u.to_string();
                         let http = TokioAuthHttp::new();
-                        let _ = perform_handle_deep_link(store.as_ref(), &http, &s);
+                        if perform_handle_deep_link(store.as_ref(), &http, &s).is_ok() {
+                            // New native session installed — kill prior cloud authority.
+                            cloud_dl.on_successful_session_install();
+                        }
                     }
                 });
                 Ok(())
@@ -91,6 +134,7 @@ pub fn run() {
             auth_begin_logto,
             auth_session_status,
             auth_logout,
+            cloud_call,
         ])
         .run(tauri::generate_context!())
         .expect("error while running OpsMate Desktop");
@@ -205,5 +249,17 @@ mod tests {
                 assert!(!s.contains(forbidden), "leaked {forbidden:?} in {s}");
             }
         }
+    }
+
+    #[test]
+    fn cloud_bridge_built_in_setup_with_required_emitter() {
+        let lib = include_str!("lib.rs");
+        assert!(lib.contains("CloudBridge::new"));
+        assert!(lib.contains("TauriSessionEmitter"));
+        assert!(lib.contains("session-invalidated"));
+        assert!(lib.contains("on_successful_session_install"));
+        assert!(lib.contains("perform_secure_logout"));
+        assert!(lib.contains("SessionInvalidatedEmitter"));
+        assert!(!lib.contains(".expect(\"cloud transport"));
     }
 }

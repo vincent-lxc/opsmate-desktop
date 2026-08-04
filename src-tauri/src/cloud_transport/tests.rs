@@ -22,6 +22,13 @@ fn empty_obj() -> Value {
     json!({})
 }
 
+const LIFECYCLE_EVENTS: &[&str] = &[
+    "try_clear_auth_for_epoch",
+    "close_all_ssh",
+    "lock_vault",
+    "emit_session_invalidated",
+];
+
 fn transport(backend: MockHttpBackend) -> CloudTransport<MockHttpBackend, NoopLifecycleHooks> {
     CloudTransport::with_backend(backend)
 }
@@ -42,7 +49,7 @@ async fn reject_unknown_operation_no_transport() {
     let backend = MockHttpBackend::new("{}");
     let t = transport(backend.clone());
     let err = t
-        .invoke_ipc("not.a.real.op", &empty_obj(), Some("t"))
+        .invoke_ipc("not.a.real.op", &empty_obj(), Some("t"), Some(1))
         .await
         .unwrap_err();
     assert_eq!(err, TransportError::UnknownOperation);
@@ -55,7 +62,7 @@ async fn reject_native_only_auth_config_no_transport() {
     let backend = MockHttpBackend::new("{}");
     let t = transport(backend.clone());
     let err = t
-        .invoke_ipc("auth.config", &empty_obj(), None)
+        .invoke_ipc("auth.config", &empty_obj(), None, None)
         .await
         .unwrap_err();
     assert_eq!(err, TransportError::NativeOnly);
@@ -70,6 +77,7 @@ async fn reject_native_only_auth_exchange_no_transport() {
         .invoke_ipc(
             "auth.exchange",
             &json!({"code": "x", "codeVerifier": "y"}),
+            None,
             None,
         )
         .await
@@ -119,7 +127,12 @@ async fn reject_extra_method_url_origin_header_authorization_bearer() {
         ("content_type", json!("text/plain")),
     ] {
         let err = t
-            .invoke_ipc("auth.me", &json!({ key: val }), Some("native-bearer"))
+            .invoke_ipc(
+                "auth.me",
+                &json!({ key: val }),
+                Some("native-bearer"),
+                Some(1),
+            )
             .await
             .unwrap_err();
         assert_eq!(
@@ -138,7 +151,7 @@ async fn reject_missing_path_param_no_transport() {
     let backend = MockHttpBackend::new("{}");
     let t = transport(backend.clone());
     let err = t
-        .invoke_ipc("servers.get", &empty_obj(), Some("t"))
+        .invoke_ipc("servers.get", &empty_obj(), Some("t"), Some(1))
         .await
         .unwrap_err();
     assert_eq!(err, TransportError::InvalidInput);
@@ -154,6 +167,7 @@ async fn reject_extra_path_or_query_field_no_transport() {
             "servers.get",
             &json!({"id": "srv-1", "extra": "nope"}),
             Some("t"),
+            Some(1),
         )
         .await
         .unwrap_err();
@@ -161,7 +175,12 @@ async fn reject_extra_path_or_query_field_no_transport() {
     assert_no_outbound(&backend);
 
     let err = t
-        .invoke_ipc("servers.list", &json!({"not_a_query": "x"}), Some("t"))
+        .invoke_ipc(
+            "servers.list",
+            &json!({"not_a_query": "x"}),
+            Some("t"),
+            Some(1),
+        )
         .await
         .unwrap_err();
     assert_eq!(err, TransportError::InvalidInput);
@@ -235,7 +254,7 @@ async fn reject_raw_and_encoded_path_traversal_no_transport() {
     ];
     for v in evil_values {
         let err = t
-            .invoke_ipc("servers.get", &json!({"id": v}), Some("t"))
+            .invoke_ipc("servers.get", &json!({"id": v}), Some("t"), Some(1))
             .await
             .unwrap_err();
         assert!(
@@ -268,7 +287,12 @@ async fn reject_query_traversal_smuggling_no_transport() {
     let backend = MockHttpBackend::new("{}");
     let t = transport(backend.clone());
     let err = t
-        .invoke_ipc("servers.list", &json!({"q": "..%2f..%2f"}), Some("t"))
+        .invoke_ipc(
+            "servers.list",
+            &json!({"q": "..%2f..%2f"}),
+            Some("t"),
+            Some(1),
+        )
         .await
         .unwrap_err();
     assert!(matches!(
@@ -282,6 +306,7 @@ async fn reject_query_traversal_smuggling_no_transport() {
             "servers.list",
             &json!({"name": "ok", "not_allowed": "x"}),
             Some("t"),
+            Some(1),
         )
         .await
         .unwrap_err();
@@ -302,6 +327,7 @@ async fn success_servers_get_builds_origin_url_and_sanitizes() {
             "servers.get",
             &json!({"id": "srv-1"}),
             Some("native-bearer-token"),
+            Some(1),
         )
         .await
         .unwrap();
@@ -330,6 +356,7 @@ async fn success_query_deterministic_encoding_and_allowlist() {
             "servers.list",
             &json!({"page_size": "10", "page": "2", "name": "a b"}),
             Some("t"),
+            Some(1),
         )
         .await
         .unwrap();
@@ -346,7 +373,7 @@ async fn success_path_param_percent_encoded_after_validation() {
     let backend = MockHttpBackend::new(r#"{"id":"x"}"#);
     let t = transport(backend.clone());
     let _ = t
-        .invoke_ipc("servers.get", &json!({"id": "a b"}), Some("t"))
+        .invoke_ipc("servers.get", &json!({"id": "a b"}), Some("t"), Some(1))
         .await
         .unwrap();
     let req = backend.last_request().unwrap();
@@ -359,7 +386,7 @@ async fn unauthenticated_authenticated_op_no_transport() {
     let backend = MockHttpBackend::new("{}");
     let t = transport(backend.clone());
     let err = t
-        .invoke_ipc("auth.me", &empty_obj(), None)
+        .invoke_ipc("auth.me", &empty_obj(), None, None)
         .await
         .unwrap_err();
     assert_eq!(err, TransportError::Unauthenticated);
@@ -567,7 +594,7 @@ async fn reject_blank_whitespace_control_bearer_zero_outbound() {
     let t = transport(backend.clone());
     for bad in ["", "   ", "\t", "\n", " \t ", "tok\0en", "tok\nen"] {
         let err = t
-            .invoke_ipc("auth.me", &empty_obj(), Some(bad))
+            .invoke_ipc("auth.me", &empty_obj(), Some(bad), Some(1))
             .await
             .unwrap_err();
         assert_eq!(
@@ -664,7 +691,7 @@ async fn six_b1_fake_async_backend_success_and_sanitization() {
     let backend = MockHttpBackend::new(r#"{"ok":true,"accessToken":"LEAK","n":1}"#);
     let t = transport(backend.clone());
     let out = t
-        .invoke_ipc("auth.me", &empty_obj(), Some("good-token"))
+        .invoke_ipc("auth.me", &empty_obj(), Some("good-token"), Some(1))
         .await
         .unwrap();
     assert_eq!(out["ok"], true);
@@ -679,8 +706,10 @@ async fn six_b1_cancellation_wins_pending_backend_future() {
     backend.set_hang(true);
     let t = Arc::new(transport(backend.clone()));
     let t2 = Arc::clone(&t);
-    let handle =
-        tokio::spawn(async move { t2.invoke_ipc("auth.me", &empty_obj(), Some("tok")).await });
+    let handle = tokio::spawn(async move {
+        t2.invoke_ipc("auth.me", &empty_obj(), Some("tok"), Some(1))
+            .await
+    });
     // Allow the hang future to start.
     tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     assert_eq!(backend.request_count(), 1);
@@ -701,20 +730,12 @@ async fn six_b1_401_lifecycle_ordered_once() {
     // SessionLifecycleHooks for Arc
     let t = CloudTransport::new(backend.clone(), ArcSpy(hooks.clone()));
     let err = t
-        .invoke_ipc("auth.me", &empty_obj(), Some("tok"))
+        .invoke_ipc("auth.me", &empty_obj(), Some("tok"), Some(1))
         .await
         .unwrap_err();
     assert_eq!(err, TransportError::SessionInvalidated);
     assert_eq!(map_transport_public(err), "session_invalidated");
-    assert_eq!(
-        hooks.events(),
-        vec![
-            "mark_reauth_required_and_clear_auth",
-            "close_all_ssh",
-            "lock_vault",
-            "emit_session_invalidated",
-        ]
-    );
+    assert_eq!(hooks.events(), LIFECYCLE_EVENTS);
     assert!(hooks.reauth_marked.load(Ordering::SeqCst));
     assert_eq!(backend.completed_count(), 1);
 }
@@ -729,27 +750,19 @@ async fn six_b1_concurrent_repeated_401_dedup() {
     for _ in 0..8 {
         let t = Arc::clone(&t);
         joins.push(tokio::spawn(async move {
-            t.invoke_ipc("auth.me", &empty_obj(), Some("tok")).await
+            t.invoke_ipc("auth.me", &empty_obj(), Some("tok"), Some(1))
+                .await
         }));
     }
     for j in joins {
         let err = j.await.unwrap().unwrap_err();
         assert_eq!(err, TransportError::SessionInvalidated);
     }
-    // Exactly one lifecycle emission set.
-    assert_eq!(
-        hooks.events(),
-        vec![
-            "mark_reauth_required_and_clear_auth",
-            "close_all_ssh",
-            "lock_vault",
-            "emit_session_invalidated",
-        ]
-    );
-    // New session epoch allows another lifecycle.
-    t.begin_session_epoch();
+    // Exactly one lifecycle emission set for epoch 1.
+    assert_eq!(hooks.events(), LIFECYCLE_EVENTS);
+    // Different auth epoch allows another lifecycle.
     let err = t
-        .invoke_ipc("auth.me", &empty_obj(), Some("tok"))
+        .invoke_ipc("auth.me", &empty_obj(), Some("tok"), Some(2))
         .await
         .unwrap_err();
     assert_eq!(err, TransportError::SessionInvalidated);
@@ -765,19 +778,11 @@ async fn six_b1_hook_failure_still_attempts_later_hooks() {
     hooks.fail_vault.store(true, Ordering::SeqCst);
     let t = CloudTransport::new(backend, ArcSpy(hooks.clone()));
     let err = t
-        .invoke_ipc("auth.me", &empty_obj(), Some("tok"))
+        .invoke_ipc("auth.me", &empty_obj(), Some("tok"), Some(1))
         .await
         .unwrap_err();
     assert_eq!(err, TransportError::SessionInvalidated);
-    assert_eq!(
-        hooks.events(),
-        vec![
-            "mark_reauth_required_and_clear_auth",
-            "close_all_ssh",
-            "lock_vault",
-            "emit_session_invalidated",
-        ]
-    );
+    assert_eq!(hooks.events(), LIFECYCLE_EVENTS);
 }
 
 #[tokio::test]
@@ -786,7 +791,7 @@ async fn six_b1_non_401_status_fixed_error_no_raw_echo() {
     backend.set_status(500);
     let t = transport(backend.clone());
     let err = t
-        .invoke_ipc("auth.me", &empty_obj(), Some("tok"))
+        .invoke_ipc("auth.me", &empty_obj(), Some("tok"), Some(1))
         .await
         .unwrap_err();
     assert_eq!(err, TransportError::HttpStatus);
@@ -866,8 +871,8 @@ fn six_b1_debug_error_leak_sentinels_absent() {
 struct ArcSpy(Arc<SpyLifecycleHooks>);
 
 impl super::lifecycle::SessionLifecycleHooks for ArcSpy {
-    fn mark_reauth_required_and_clear_auth(&self) {
-        self.0.mark_reauth_required_and_clear_auth();
+    fn try_clear_auth_for_epoch(&self, epoch: u64) -> Result<bool, ()> {
+        self.0.try_clear_auth_for_epoch(epoch)
     }
     fn close_all_ssh(&self) -> Result<(), ()> {
         self.0.close_all_ssh()
@@ -876,7 +881,7 @@ impl super::lifecycle::SessionLifecycleHooks for ArcSpy {
         self.0.lock_vault()
     }
     fn emit_session_invalidated(&self) {
-        self.0.emit_session_invalidated();
+        self.0.emit_session_invalidated()
     }
 }
 
@@ -891,9 +896,9 @@ use std::time::Duration;
 #[tokio::test]
 async fn review_cancel_before_waiter_polling_is_observed() {
     let control = InvalidationControl::new();
-    let gen = control.cancel_generation();
-    control.cancel_inflight();
-    tokio::time::timeout(Duration::from_millis(200), control.cancelled(gen))
+    let token = control.waiter_token(Some(7));
+    control.cancel_auth_epoch(7);
+    tokio::time::timeout(Duration::from_millis(200), control.cancelled_token(token))
         .await
         .expect("cancel before wait must not hang (lost-wakeup / durable gen)");
 }
@@ -902,20 +907,19 @@ async fn review_cancel_before_waiter_polling_is_observed() {
 #[tokio::test]
 async fn review_concurrent_wait_cancel_cycles_bounded() {
     let control = Arc::new(InvalidationControl::new());
-    for _ in 0..40 {
-        let gen = control.cancel_generation();
+    for i in 0..40u64 {
+        let token = control.waiter_token(Some(i));
         let c = Arc::clone(&control);
         let waiter = tokio::spawn(async move {
-            tokio::time::timeout(Duration::from_millis(500), c.cancelled(gen))
+            tokio::time::timeout(Duration::from_millis(500), c.cancelled_token(token))
                 .await
                 .expect("waiter must observe cancel within timeout")
         });
-        // Interleave: sometimes cancel immediately, sometimes after tiny yield.
-        if gen % 2 == 0 {
-            control.cancel_inflight();
+        if i % 2 == 0 {
+            control.cancel_auth_epoch(i);
         } else {
             tokio::task::yield_now().await;
-            control.cancel_inflight();
+            control.cancel_auth_epoch(i);
         }
         waiter.await.unwrap();
     }
@@ -951,9 +955,9 @@ fn review_cancellation_uses_durable_watch_not_notify_race() {
     );
 }
 
-/// Review #2: begin_session_epoch blocked while old 401 lifecycle holds hooks.
+/// Review #2: concurrent 401 lifecycle for same epoch is serialized on the lock.
 #[test]
-fn review_begin_session_epoch_serialized_with_lifecycle() {
+fn review_same_epoch_lifecycle_serialized_on_lock() {
     use super::lifecycle::SessionLifecycleHooks;
     use std::sync::Condvar;
 
@@ -964,23 +968,20 @@ fn review_begin_session_epoch_serialized_with_lifecycle() {
     }
 
     impl SessionLifecycleHooks for BlockingHooks {
-        fn mark_reauth_required_and_clear_auth(&self) {
+        fn try_clear_auth_for_epoch(&self, _epoch: u64) -> Result<bool, ()> {
             {
                 let (lock, cv) = &*self.entered;
                 let mut g = lock.lock().unwrap();
                 *g = true;
                 cv.notify_all();
             }
-            // Block until release.
             let (lock, cv) = &*self.release;
             let mut g = lock.lock().unwrap();
             while !*g {
                 g = cv.wait(g).unwrap();
             }
-            self.events
-                .lock()
-                .unwrap()
-                .push("mark_reauth_required_and_clear_auth");
+            self.events.lock().unwrap().push("try_clear_auth_for_epoch");
+            Ok(true)
         }
         fn close_all_ssh(&self) -> Result<(), ()> {
             self.events.lock().unwrap().push("close_all_ssh");
@@ -1006,10 +1007,9 @@ fn review_begin_session_epoch_serialized_with_lifecycle() {
 
     let control_l = Arc::clone(&control);
     let life = std::thread::spawn(move || {
-        assert!(control_l.run_401_lifecycle_once(&hooks));
+        assert!(control_l.run_401_for_auth_epoch(9, &hooks));
     });
 
-    // Wait until lifecycle is inside mark_reauth.
     {
         let (lock, cv) = &*entered;
         let mut g = lock.lock().unwrap();
@@ -1019,21 +1019,22 @@ fn review_begin_session_epoch_serialized_with_lifecycle() {
     }
 
     let control_e = Arc::clone(&control);
-    let epoch_done = Arc::new(AtomicBool::new(false));
-    let epoch_done2 = Arc::clone(&epoch_done);
-    let epoch_thread = std::thread::spawn(move || {
-        control_e.begin_session_epoch();
-        epoch_done2.store(true, Ordering::SeqCst);
+    let second_done = Arc::new(AtomicBool::new(false));
+    let second_done2 = Arc::clone(&second_done);
+    let second = std::thread::spawn(move || {
+        // Dedupe: same epoch while first holds lock — must wait then return false.
+        let hooks2 = SpyLifecycleHooks::new();
+        let ran = control_e.run_401_for_auth_epoch(9, &hooks2);
+        second_done2.store(true, Ordering::SeqCst);
+        assert!(!ran, "second same-epoch lifecycle must be deduped");
     });
 
-    // Give begin_session_epoch a chance to race incorrectly.
     std::thread::sleep(Duration::from_millis(50));
     assert!(
-        !epoch_done.load(Ordering::SeqCst),
-        "begin_session_epoch must not complete while old 401 lifecycle holds the lock"
+        !second_done.load(Ordering::SeqCst),
+        "second lifecycle must wait on lifecycle_lock"
     );
 
-    // Release lifecycle hooks.
     {
         let (lock, cv) = &*release;
         let mut g = lock.lock().unwrap();
@@ -1041,13 +1042,13 @@ fn review_begin_session_epoch_serialized_with_lifecycle() {
         cv.notify_all();
     }
     life.join().unwrap();
-    epoch_thread.join().unwrap();
-    assert!(epoch_done.load(Ordering::SeqCst));
+    second.join().unwrap();
+    assert!(second_done.load(Ordering::SeqCst));
 
-    // New epoch can invalidate once.
-    let hooks2 = SpyLifecycleHooks::new();
-    assert!(control.run_401_lifecycle_once(&hooks2));
-    assert_eq!(hooks2.events().len(), 4);
+    // Different auth epoch can invalidate once.
+    let hooks3 = SpyLifecycleHooks::new();
+    assert!(control.run_401_for_auth_epoch(10, &hooks3));
+    assert_eq!(hooks3.events().len(), 4);
 }
 
 /// Review #3: only 2xx bodies are read/buffered (exported policy + source branch).

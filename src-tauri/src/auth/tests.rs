@@ -819,10 +819,15 @@ fn auth_source_forbids_spa_token_sync_eval_and_storage() {
 }
 
 #[test]
-fn auth_public_command_allowlist_only_three_named_commands() {
+fn auth_public_command_allowlist_only_named_commands() {
     let lib = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/lib.rs");
     let raw = std::fs::read_to_string(lib).unwrap();
-    for name in ["auth_begin_logto", "auth_session_status", "auth_logout"] {
+    for name in [
+        "auth_begin_logto",
+        "auth_session_status",
+        "auth_logout",
+        "cloud_call",
+    ] {
         assert!(raw.contains(name));
     }
     let start = raw.find("generate_handler![").expect("generate_handler!");
@@ -832,6 +837,7 @@ fn auth_public_command_allowlist_only_three_named_commands() {
     assert!(handler.contains("auth_begin_logto"));
     assert!(handler.contains("auth_session_status"));
     assert!(handler.contains("auth_logout"));
+    assert!(handler.contains("cloud_call"));
     for banned in [
         "auth_on_unauthorized",
         "fetch_url",
@@ -840,6 +846,36 @@ fn auth_public_command_allowlist_only_three_named_commands() {
     ] {
         assert!(!handler.contains(banned));
     }
+}
+
+#[test]
+fn mark_reauth_required_if_epoch_current_vs_stale() {
+    let store = AuthStore::new();
+    store.install_session_for_tests("t1", "alice", "admin", "sub-1");
+    let epoch = store.native_auth_snapshot().unwrap().epoch;
+    assert_eq!(store.mark_reauth_required_if_epoch(epoch), Ok(true));
+    assert!(store.native_auth_snapshot().is_none());
+    // Stale epoch after clear: Ok(false).
+    assert_eq!(store.mark_reauth_required_if_epoch(epoch), Ok(false));
+
+    store.install_session_for_tests("t1", "bob", "admin", "sub-2");
+    let new_epoch = store.native_auth_snapshot().unwrap().epoch;
+    assert_eq!(store.mark_reauth_required_if_epoch(epoch), Ok(false)); // old
+    assert!(store.native_auth_snapshot().is_some());
+    assert_eq!(store.mark_reauth_required_if_epoch(new_epoch), Ok(true));
+    assert!(store.native_auth_snapshot().is_none());
+}
+
+#[test]
+fn mark_reauth_required_if_epoch_poison_is_err_not_stale() {
+    let store = AuthStore::new();
+    store.install_session_for_tests("t1", "alice", "admin", "sub-1");
+    let epoch = store.native_auth_snapshot().unwrap().epoch;
+    store.poison_lock_for_tests();
+    assert!(matches!(
+        store.mark_reauth_required_if_epoch(epoch),
+        Err(AuthError::Internal)
+    ));
 }
 
 #[test]

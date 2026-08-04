@@ -1,44 +1,40 @@
-//! Session invalidation lifecycle (401) — hooks for auth clear, SSH, vault.
+//! Session invalidation lifecycle (401) — auth-epoch high-watermark design.
 //!
-//! Task 8 modules do not exist yet: production wiring is 6B2/Task8.
-//! This module defines the ordered hook trait + cancellation generation only.
-//! Do not claim real SSH/vault closure here.
+//! Cancel and lifecycle completion use **bounded atomic watermarks** (not HashSets):
+//! - `cancelled_through`: all auth epochs `<=` this value are cancelled
+//! - `lifecycle_done_through`: lifecycle already ran for all epochs `<=` this value
+//!
+//! Monotonic auth epochs + out-of-order stale 401 (e.g. E3 then E2) are safe.
+//! Strictly newer epochs remain unaffected until their own watermark advance.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use tokio::sync::watch;
 
-/// Ordered security hooks invoked once per session epoch on 401 invalidation.
+/// Ordered security hooks for 401 invalidation of a specific auth epoch.
 ///
-/// Exact order (enforced by `InvalidationControl::run_401_lifecycle_once`):
-/// 1. cancel in-flight / queued requests
-/// 2. `mark_reauth_required_and_clear_auth` (cannot be skipped)
-/// 3. `close_all_ssh` (attempted even if it errors)
-/// 4. `lock_vault` (attempted even if it errors)
-/// 5. `emit_session_invalidated` (secret-free)
+/// Exact order:
+/// 1. cancel in-flight/queued for epochs `<=` request epoch (watermark)
+/// 2. `try_clear_auth_for_epoch`
+/// 3. On `Ok(true)` or `Err` (fail closed): SSH → vault → emit
+///    On `Ok(false)` (genuine stale): skip SSH/vault/emit
 pub trait SessionLifecycleHooks: Send + Sync {
-    /// Mark reauth required and clear native auth session (always runs on 401).
-    fn mark_reauth_required_and_clear_auth(&self);
-
-    /// Close all SSH sessions. Errors are ignored so later hooks still run.
+    /// `Ok(true)` cleared current; `Ok(false)` stale; `Err` internal/untrusted.
+    fn try_clear_auth_for_epoch(&self, epoch: u64) -> Result<bool, ()>;
     fn close_all_ssh(&self) -> Result<(), ()>;
-
-    /// Lock vault. Errors are ignored so later hooks still run.
     fn lock_vault(&self) -> Result<(), ()>;
-
-    /// Emit secret-free session-invalidated signal (no token/body/URL).
     fn emit_session_invalidated(&self);
 }
 
-/// No-op hooks for reject-path unit tests that do not exercise 401.
-/// Production must never default to this — 401 would silently skip real cleanup.
 #[cfg(test)]
 #[derive(Debug, Default, Clone, Copy)]
 pub struct NoopLifecycleHooks;
 
 #[cfg(test)]
 impl SessionLifecycleHooks for NoopLifecycleHooks {
-    fn mark_reauth_required_and_clear_auth(&self) {}
+    fn try_clear_auth_for_epoch(&self, _epoch: u64) -> Result<bool, ()> {
+        Ok(true)
+    }
     fn close_all_ssh(&self) -> Result<(), ()> {
         Ok(())
     }
@@ -48,21 +44,15 @@ impl SessionLifecycleHooks for NoopLifecycleHooks {
     fn emit_session_invalidated(&self) {}
 }
 
-/// Cancellation + session-epoch control owned by Rust (not WebView).
-///
-/// Cancellation uses a `tokio::sync::watch` generation channel so the current
-/// generation is durable: waiters observe cancel even if it happened before they
-/// polled (no Notify lost-wakeup race).
-///
-/// - `session_epoch` identifies authenticated session generations for 401 dedup.
-/// - Lifecycle and `begin_session_epoch` share one mutex so an old-session
-///   lifecycle cannot clear a newly established session.
+/// Cancellation + 401 lifecycle control (auth-epoch high-watermark).
 pub struct InvalidationControl {
     cancel_tx: watch::Sender<u64>,
-    session_epoch: AtomicU64,
-    /// Epoch for which 401 lifecycle already completed (`0` = none).
-    lifecycle_done_epoch: AtomicU64,
-    /// Serializes 401 lifecycle and session epoch bumps.
+    /// All auth epochs `<=` this value have been cancelled (monotonic watermark).
+    cancelled_through: AtomicU64,
+    /// Global logout generation (cancels every waiter).
+    global_cancel_gen: AtomicU64,
+    /// Lifecycle completed for all epochs `<=` this value.
+    lifecycle_done_through: AtomicU64,
     lifecycle_lock: Mutex<()>,
 }
 
@@ -77,94 +67,123 @@ impl InvalidationControl {
         let (cancel_tx, _rx) = watch::channel(1u64);
         Self {
             cancel_tx,
-            // Start at 1 so "done epoch 0" means no lifecycle yet.
-            session_epoch: AtomicU64::new(1),
-            lifecycle_done_epoch: AtomicU64::new(0),
+            cancelled_through: AtomicU64::new(0),
+            global_cancel_gen: AtomicU64::new(0),
+            lifecycle_done_through: AtomicU64::new(0),
             lifecycle_lock: Mutex::new(()),
         }
     }
 
-    /// Snapshot cancellation generation at call start.
     pub fn cancel_generation(&self) -> u64 {
         *self.cancel_tx.borrow()
     }
 
-    pub fn session_epoch(&self) -> u64 {
-        self.session_epoch.load(Ordering::SeqCst)
+    pub fn global_cancel_generation(&self) -> u64 {
+        self.global_cancel_gen.load(Ordering::SeqCst)
     }
 
-    /// True if cancellation generation changed since `start_gen`.
-    pub fn is_cancelled(&self, start_gen: u64) -> bool {
-        *self.cancel_tx.borrow() != start_gen
+    pub fn cancelled_through(&self) -> u64 {
+        self.cancelled_through.load(Ordering::SeqCst)
     }
 
-    /// Wait until cancellation generation differs from `start_gen`.
-    ///
-    /// Uses watch's durable observed state — safe if cancel already happened.
-    pub async fn cancelled(&self, start_gen: u64) {
+    pub fn lifecycle_done_through(&self) -> u64 {
+        self.lifecycle_done_through.load(Ordering::SeqCst)
+    }
+
+    pub fn waiter_token(&self, auth_epoch: Option<u64>) -> CancelWaitToken {
+        CancelWaitToken {
+            auth_epoch,
+            start_global: self.global_cancel_generation(),
+        }
+    }
+
+    /// Epoch cancelled if watermark covers it; all waiters cancelled on global logout.
+    pub fn is_cancelled_token(&self, token: &CancelWaitToken) -> bool {
+        if self.global_cancel_generation() != token.start_global {
+            return true;
+        }
+        match token.auth_epoch {
+            None => false,
+            Some(epoch) => self.cancelled_through() >= epoch,
+        }
+    }
+
+    pub async fn cancelled_token(&self, token: CancelWaitToken) {
         let mut rx = self.cancel_tx.subscribe();
-        if *rx.borrow_and_update() != start_gen {
-            return;
-        }
         loop {
-            if rx.changed().await.is_err() {
-                // Sender dropped — treat as terminal cancel.
+            if self.is_cancelled_token(&token) {
                 return;
             }
-            if *rx.borrow_and_update() != start_gen {
+            if rx.changed().await.is_err() {
                 return;
             }
         }
     }
 
-    /// Abort in-flight and fail-closed queued work (no hooks).
-    pub fn cancel_inflight(&self) {
+    /// Raise cancel watermark to at least `auth_epoch` (401 path).
+    pub fn cancel_auth_epoch(&self, auth_epoch: u64) {
+        self.cancelled_through
+            .fetch_max(auth_epoch, Ordering::SeqCst);
         self.cancel_tx.send_modify(|g| *g = g.wrapping_add(1));
     }
 
-    /// Begin a new authenticated session epoch (allows a future 401 lifecycle).
-    ///
-    /// Serialized with `run_401_lifecycle_once` so an in-flight old-session
-    /// lifecycle cannot interleave with establishing a new session.
-    pub fn begin_session_epoch(&self) {
-        let _guard = self
-            .lifecycle_lock
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        self.session_epoch.fetch_add(1, Ordering::SeqCst);
+    /// Cancel all waiters (logout / session transition).
+    pub fn cancel_all(&self) {
+        self.global_cancel_gen.fetch_add(1, Ordering::SeqCst);
+        // Raise watermark to max so any finite epoch is covered under global path via gen.
+        self.cancel_tx.send_modify(|g| *g = g.wrapping_add(1));
     }
 
-    /// Run 401 lifecycle exactly once for the current session epoch.
-    /// Concurrent callers for the same epoch skip duplicate hooks.
-    ///
-    /// Returns `true` if this caller executed the hooks, `false` if deduped.
-    pub fn run_401_lifecycle_once<H: SessionLifecycleHooks>(&self, hooks: &H) -> bool {
+    pub fn cancel_inflight(&self) {
+        self.cancel_all();
+    }
+
+    /// Run 401 lifecycle once for `auth_epoch` (dedupe via watermark).
+    /// Returns true if this caller executed the lifecycle body (not deduped).
+    pub fn run_401_for_auth_epoch<H: SessionLifecycleHooks>(
+        &self,
+        auth_epoch: u64,
+        hooks: &H,
+    ) -> bool {
         let _guard = self
             .lifecycle_lock
             .lock()
             .unwrap_or_else(|e| e.into_inner());
 
-        let epoch = self.session_epoch.load(Ordering::SeqCst);
-        if self.lifecycle_done_epoch.load(Ordering::SeqCst) == epoch {
+        if self.lifecycle_done_through.load(Ordering::SeqCst) >= auth_epoch {
+            // Still ensure cancel watermark covers this epoch for any stragglers.
+            self.cancel_auth_epoch(auth_epoch);
             return false;
         }
 
-        // 1. Cancel requests (durable generation bump).
-        self.cancel_tx.send_modify(|g| *g = g.wrapping_add(1));
+        // 1. Cancel same/older epochs (watermark).
+        self.cancel_auth_epoch(auth_epoch);
 
-        // 2. Auth clear — cannot be skipped.
-        hooks.mark_reauth_required_and_clear_auth();
+        // 2. Conditional auth clear — distinguish stale vs failure.
+        let apply_cutoffs = match hooks.try_clear_auth_for_epoch(auth_epoch) {
+            Ok(true) => true,   // current epoch cleared
+            Ok(false) => false, // genuine stale — leave newer session alone
+            Err(()) => true,    // fail closed — auth untrusted
+        };
 
-        // 3–4. Attempt even if earlier non-auth hook errors.
-        let _ = hooks.close_all_ssh();
-        let _ = hooks.lock_vault();
+        if apply_cutoffs {
+            let _ = hooks.close_all_ssh();
+            let _ = hooks.lock_vault();
+            hooks.emit_session_invalidated();
+        }
 
-        // 5. Secret-free emit.
-        hooks.emit_session_invalidated();
-
-        self.lifecycle_done_epoch.store(epoch, Ordering::SeqCst);
+        self.lifecycle_done_through
+            .fetch_max(auth_epoch, Ordering::SeqCst);
         true
     }
+}
+
+/// Opaque cancel wait state for one cloud call.
+#[derive(Debug, Clone, Copy)]
+pub struct CancelWaitToken {
+    pub auth_epoch: Option<u64>,
+    /// Global logout generation at call start (durable cancel for logout).
+    pub start_global: u64,
 }
 
 #[cfg(test)]
@@ -173,18 +192,22 @@ mod spy {
     use std::sync::atomic::AtomicBool;
     use std::sync::Mutex;
 
-    /// Test spy recording ordered lifecycle events.
     #[derive(Debug, Default)]
     pub struct SpyLifecycleHooks {
         pub events: Mutex<Vec<&'static str>>,
         pub fail_ssh: AtomicBool,
         pub fail_vault: AtomicBool,
         pub reauth_marked: AtomicBool,
+        pub cleared_epochs: Mutex<Vec<u64>>,
+        pub clear_only_epoch: Mutex<Option<u64>>,
+        pub always_clear: AtomicBool,
     }
 
     impl SpyLifecycleHooks {
         pub fn new() -> Self {
-            Self::default()
+            let s = Self::default();
+            s.always_clear.store(true, Ordering::SeqCst);
+            s
         }
 
         pub fn events(&self) -> Vec<&'static str> {
@@ -193,11 +216,25 @@ mod spy {
     }
 
     impl SessionLifecycleHooks for SpyLifecycleHooks {
-        fn mark_reauth_required_and_clear_auth(&self) {
-            self.reauth_marked.store(true, Ordering::SeqCst);
+        fn try_clear_auth_for_epoch(&self, epoch: u64) -> Result<bool, ()> {
             if let Ok(mut g) = self.events.lock() {
-                g.push("mark_reauth_required_and_clear_auth");
+                g.push("try_clear_auth_for_epoch");
             }
+            if let Ok(only) = self.clear_only_epoch.lock() {
+                if let Some(e) = *only {
+                    if e != epoch {
+                        return Ok(false);
+                    }
+                }
+            }
+            if !self.always_clear.load(Ordering::SeqCst) {
+                return Err(());
+            }
+            self.reauth_marked.store(true, Ordering::SeqCst);
+            if let Ok(mut g) = self.cleared_epochs.lock() {
+                g.push(epoch);
+            }
+            Ok(true)
         }
 
         fn close_all_ssh(&self) -> Result<(), ()> {
@@ -228,7 +265,129 @@ mod spy {
             }
         }
     }
+
+    /// Records cancel watermark advances for order tests (wraps real control).
+    #[derive(Debug, Default)]
+    pub struct OrderedSpyHooks {
+        pub inner: SpyLifecycleHooks,
+        pub order: Mutex<Vec<&'static str>>,
+    }
+
+    impl OrderedSpyHooks {
+        pub fn new() -> Self {
+            Self {
+                inner: SpyLifecycleHooks::new(),
+                order: Mutex::new(Vec::new()),
+            }
+        }
+        pub fn order(&self) -> Vec<&'static str> {
+            self.order.lock().map(|g| g.clone()).unwrap_or_default()
+        }
+    }
+
+    impl SessionLifecycleHooks for OrderedSpyHooks {
+        fn try_clear_auth_for_epoch(&self, epoch: u64) -> Result<bool, ()> {
+            if let Ok(mut o) = self.order.lock() {
+                o.push("try_clear_auth_for_epoch");
+            }
+            self.inner.try_clear_auth_for_epoch(epoch)
+        }
+        fn close_all_ssh(&self) -> Result<(), ()> {
+            if let Ok(mut o) = self.order.lock() {
+                o.push("close_all_ssh");
+            }
+            self.inner.close_all_ssh()
+        }
+        fn lock_vault(&self) -> Result<(), ()> {
+            if let Ok(mut o) = self.order.lock() {
+                o.push("lock_vault");
+            }
+            self.inner.lock_vault()
+        }
+        fn emit_session_invalidated(&self) {
+            if let Ok(mut o) = self.order.lock() {
+                o.push("emit_session_invalidated");
+            }
+            self.inner.emit_session_invalidated()
+        }
+    }
 }
 
 #[cfg(test)]
-pub use spy::SpyLifecycleHooks;
+pub use spy::{OrderedSpyHooks, SpyLifecycleHooks};
+
+#[cfg(test)]
+mod watermark_tests {
+    use super::*;
+
+    #[test]
+    fn watermark_cancel_covers_older_not_newer() {
+        let c = InvalidationControl::new();
+        c.cancel_auth_epoch(5);
+        assert!(c.is_cancelled_token(&CancelWaitToken {
+            auth_epoch: Some(5),
+            start_global: 0,
+        }));
+        assert!(c.is_cancelled_token(&CancelWaitToken {
+            auth_epoch: Some(3),
+            start_global: 0,
+        }));
+        assert!(!c.is_cancelled_token(&CancelWaitToken {
+            auth_epoch: Some(6),
+            start_global: 0,
+        }));
+    }
+
+    #[test]
+    fn clear_err_fail_closed_still_cuts_and_emits() {
+        let c = InvalidationControl::new();
+        let hooks = SpyLifecycleHooks::new();
+        hooks.always_clear.store(false, Ordering::SeqCst);
+        assert!(c.run_401_for_auth_epoch(4, &hooks));
+        assert_eq!(
+            hooks.events(),
+            vec![
+                "try_clear_auth_for_epoch",
+                "close_all_ssh",
+                "lock_vault",
+                "emit_session_invalidated",
+            ]
+        );
+    }
+
+    #[test]
+    fn out_of_order_e3_then_e2_dedupes_without_hashset() {
+        let c = InvalidationControl::new();
+        let hooks = SpyLifecycleHooks::new();
+        assert!(c.run_401_for_auth_epoch(3, &hooks));
+        assert_eq!(c.cancelled_through(), 3);
+        assert_eq!(c.lifecycle_done_through(), 3);
+        // Stale E2 after E3
+        assert!(!c.run_401_for_auth_epoch(2, &hooks));
+        assert_eq!(hooks.events().len(), 4); // only first lifecycle
+                                             // Production control fields use atomics (source contract).
+        let src = include_str!("lifecycle.rs");
+        assert!(src.contains("cancelled_through: AtomicU64"));
+        assert!(src.contains("lifecycle_done_through: AtomicU64"));
+        let prod = src.split("mod watermark_tests").next().unwrap_or("");
+        assert!(
+            !prod.contains("collections::"),
+            "production lifecycle must not use collections for epoch tracking"
+        );
+    }
+
+    #[test]
+    fn many_epochs_watermark_stays_bounded() {
+        let c = InvalidationControl::new();
+        let hooks = SpyLifecycleHooks::new();
+        for e in 1..=200u64 {
+            let _ = c.run_401_for_auth_epoch(e, &hooks);
+        }
+        assert_eq!(c.lifecycle_done_through(), 200);
+        assert_eq!(c.cancelled_through(), 200);
+        // Only one atomics pair — re-run old epoch dedupes
+        let before = hooks.events().len();
+        assert!(!c.run_401_for_auth_epoch(50, &hooks));
+        assert_eq!(hooks.events().len(), before);
+    }
+}

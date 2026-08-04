@@ -92,29 +92,31 @@ impl<B: HttpBackend, H: SessionLifecycleHooks> CloudTransport<B, H> {
         &self.control
     }
 
-    pub fn begin_session_epoch(&self) {
-        self.control.begin_session_epoch();
-    }
-
     pub fn cancel_inflight(&self) {
         self.control.cancel_inflight();
     }
 
+    pub fn cancel_auth_epoch(&self, auth_epoch: u64) {
+        self.control.cancel_auth_epoch(auth_epoch);
+    }
+
     /// Execute a WebView/business IPC operation (async).
     ///
-    /// Reject paths never call the backend. In-flight work races cancellation.
-    /// 401 runs ordered lifecycle once per session epoch and returns
-    /// `SessionInvalidated`.
+    /// Reject paths never call the backend. In-flight work races **auth-epoch**
+    /// cancellation. 401 runs lifecycle once for `auth_epoch` (conditional clear).
+    ///
+    /// `auth_epoch` is the `NativeAuthSnapshot::epoch` captured before the call
+    /// (None only for unauthenticated ops). Never from WebView input.
     pub async fn invoke_ipc(
         &self,
         operation_id: &str,
         business_input: &Value,
         bearer: Option<&str>,
+        auth_epoch: Option<u64>,
     ) -> Result<Value, TransportError> {
-        let start_gen = self.control.cancel_generation();
-        if self.control.is_cancelled(start_gen) {
-            // Should not happen for fresh gen, but fail closed.
-            return Err(TransportError::Cancelled);
+        let wait = self.control.waiter_token(auth_epoch);
+        if self.control.is_cancelled_token(&wait) {
+            return Err(Self::map_cancel_error(&self.control, &wait, auth_epoch));
         }
 
         let op = from_id(operation_id).ok_or(TransportError::UnknownOperation)?;
@@ -135,36 +137,67 @@ impl<B: HttpBackend, H: SessionLifecycleHooks> CloudTransport<B, H> {
 
         let built = build_request(&s, business_input, bearer)?;
 
-        // Queued after invalidation: fail closed before outbound.
-        if self.control.is_cancelled(start_gen) {
-            return Err(TransportError::Cancelled);
+        if self.control.is_cancelled_token(&wait) {
+            return Err(Self::map_cancel_error(&self.control, &wait, auth_epoch));
         }
 
+        // Prefer a completed backend response over cancel when both are ready so
+        // concurrent 401s still observe status=401 and run lifecycle dedupe.
+        // Cancel still wins when the backend future is pending (hang / network).
         let result = tokio::select! {
-            biased;
-            _ = self.control.cancelled(start_gen) => {
+            res = self.backend.execute(built) => res,
+            _ = self.control.cancelled_token(wait) => {
                 Err(TransportError::Cancelled)
             }
-            res = self.backend.execute(built) => res,
         };
 
         let response = match result {
             Ok(r) => r,
-            Err(TransportError::Cancelled) => return Err(TransportError::Cancelled),
+            Err(TransportError::Cancelled) => {
+                return Err(Self::map_cancel_error(&self.control, &wait, auth_epoch));
+            }
             Err(e) => return Err(e),
         };
 
-        // If cancelled while completing, still fail closed (no sanitize of late body).
-        if self.control.is_cancelled(start_gen) {
-            return Err(TransportError::Cancelled);
+        // 401 must run epoch lifecycle even if a peer already cancelled this epoch
+        // (otherwise concurrent 401s would surface as Cancelled and skip dedupe/clear).
+        if response.status == 401 {
+            return self.handle_backend_response(response, auth_epoch);
         }
 
-        self.handle_backend_response(response)
+        if self.control.is_cancelled_token(&wait) {
+            return Err(Self::map_cancel_error(&self.control, &wait, auth_epoch));
+        }
+
+        self.handle_backend_response(response, auth_epoch)
     }
 
-    fn handle_backend_response(&self, response: BackendResponse) -> Result<Value, TransportError> {
+    /// Map cancel to `session_invalidated` when peer 401 covered this auth epoch.
+    fn map_cancel_error(
+        control: &super::lifecycle::InvalidationControl,
+        wait: &super::lifecycle::CancelWaitToken,
+        auth_epoch: Option<u64>,
+    ) -> TransportError {
+        if control.global_cancel_generation() != wait.start_global {
+            return TransportError::Cancelled;
+        }
+        if let Some(e) = auth_epoch {
+            if control.cancelled_through() >= e {
+                return TransportError::SessionInvalidated;
+            }
+        }
+        TransportError::Cancelled
+    }
+
+    fn handle_backend_response(
+        &self,
+        response: BackendResponse,
+        auth_epoch: Option<u64>,
+    ) -> Result<Value, TransportError> {
         if response.status == 401 {
-            self.control.run_401_lifecycle_once(&self.hooks);
+            if let Some(epoch) = auth_epoch {
+                self.control.run_401_for_auth_epoch(epoch, &self.hooks);
+            }
             return Err(TransportError::SessionInvalidated);
         }
         if !(200..300).contains(&response.status) {

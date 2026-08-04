@@ -303,6 +303,43 @@ impl AuthStore {
         Some(Zeroizing::new(s.token.as_str().to_string()))
     }
 
+    /// Clear session + mark reauth only if `expected_epoch` still matches.
+    ///
+    /// Atomic under the auth lock.
+    /// - `Ok(true)` — cleared current session for this epoch
+    /// - `Ok(false)` — genuine stale epoch (newer session already installed)
+    /// - `Err` — lock/internal failure (caller must fail closed)
+    ///
+    /// Never exposes epoch over IPC.
+    pub fn mark_reauth_required_if_epoch(&self, expected_epoch: u64) -> Result<bool, AuthError> {
+        let mut mem = self.inner.lock().map_err(|_| AuthError::Internal)?;
+        if mem.session_epoch != expected_epoch {
+            return Ok(false);
+        }
+        // Only clear when a session is present for this epoch.
+        if mem.session.is_none() {
+            return Ok(false);
+        }
+        Self::clear_native_locked(&mut mem);
+        mem.reauth_required = true;
+        Ok(true)
+    }
+
+    /// Current session epoch (crate tests / native only — not IPC).
+    #[cfg(test)]
+    pub fn session_epoch_for_tests(&self) -> u64 {
+        self.inner.lock().map(|m| m.session_epoch).unwrap_or(0)
+    }
+
+    /// Poison the auth mutex for fail-closed logout / clear tests.
+    #[cfg(test)]
+    pub fn poison_lock_for_tests(&self) {
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = self.inner.lock().expect("auth store lock");
+            panic!("intentional auth store poison");
+        }));
+    }
+
     /// Install a principal-bearing native session for unit tests (no WebView surface).
     #[cfg(test)]
     pub fn install_session_for_tests(
