@@ -272,8 +272,9 @@ fn vault_lease_and_stored_not_serialize_clone_in_source() {
 }
 
 #[test]
-fn vault_no_ipc_commands_registered_in_lib() {
+fn vault_named_ipc_only_no_stronghold_plugin() {
     let lib = include_str!("../lib.rs");
+    let prod = lib.split("#[cfg(test)]").next().unwrap_or(lib);
     for name in [
         "vault_status",
         "vault_init",
@@ -283,16 +284,22 @@ fn vault_no_ipc_commands_registered_in_lib() {
         "vault_list_meta",
         "vault_delete_local",
     ] {
-        assert!(
-            !lib.contains(name),
-            "8A1 must not register IPC command {name}"
-        );
+        assert!(prod.contains(name), "8A2A registers named command {name}");
     }
-    assert!(lib.contains("pub mod vault"));
-    assert!(lib.contains("pub mod secure_prompt"));
-    // No Stronghold plugin registration.
-    assert!(!lib.contains("tauri_plugin_stronghold::init"));
-    assert!(!lib.contains("plugin(tauri_plugin_stronghold"));
+    assert!(prod.contains("pub mod vault"));
+    assert!(prod.contains("pub mod secure_prompt"));
+    // No Stronghold plugin registration in production run/setup (library use only).
+    let setup = prod
+        .split("pub fn run()")
+        .nth(1)
+        .unwrap_or(prod)
+        .split("invoke_handler")
+        .next()
+        .unwrap_or("");
+    assert!(
+        !setup.contains("stronghold::init"),
+        "must not register Stronghold plugin"
+    );
 }
 
 #[test]

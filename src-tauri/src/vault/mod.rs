@@ -1,8 +1,8 @@
-//! Local Stronghold credential vault (Task 8A1 — core only).
+//! Local Stronghold credential vault (Task 8A1 core + 8A2A runtime).
 //!
 //! Stronghold namespace is **tenant_id + Logto subject + credential_id** only.
 //! Never username/user_id. WebView DTOs accept only credentialId.
-//! No Tauri IPC commands registered here (Task 8A2). No Stronghold plugin registration.
+//! Named IPC lives in `lib.rs`. No Stronghold plugin registration/capability.
 
 use crate::auth::{AuthBinding, AuthStore, NativePrincipal};
 use crate::secure_prompt::{PromptError, SecurePrompt};
@@ -746,6 +746,39 @@ impl VaultService {
     pub fn on_logout(&self) -> Result<(), VaultError> {
         let _ = self.lock_with_reason("logout")?;
         Ok(())
+    }
+
+    /// Seal on successful re-login / principal transition (keeps snapshot path).
+    pub fn seal_for_principal_change(&self) -> Result<(), VaultError> {
+        let _ = self.lock_with_reason("principal_changed")?;
+        Ok(())
+    }
+
+    /// True when Stronghold is currently unlocked (native-only probe).
+    pub fn is_unlocked(&self) -> bool {
+        self.inner
+            .lock()
+            .map(|g| matches!(*g, VaultInner::Unlocked(_)))
+            .unwrap_or(false)
+    }
+
+    /// Map vault errors to fixed public IPC codes (never raw secret text).
+    pub fn map_vault_public(e: VaultError) -> &'static str {
+        match e {
+            VaultError::Locked => "vault_locked",
+            VaultError::AlreadyUnlocked => "vault_already_unlocked",
+            VaultError::NotInitialized => "vault_not_initialized",
+            VaultError::AlreadyInitialized => "vault_already_initialized",
+            VaultError::InvalidPassword => "vault_invalid_password",
+            VaultError::InvalidIdentity => "vault_invalid_identity",
+            VaultError::Unauthenticated => "vault_unauthenticated",
+            VaultError::NotFound => "vault_not_found",
+            VaultError::InvalidPrivateKey => "vault_invalid_private_key",
+            VaultError::PromptCancelled => "vault_prompt_cancelled",
+            VaultError::PromptFailed => "vault_prompt_failed",
+            VaultError::Storage => "vault_storage_error",
+            VaultError::Internal => "vault_internal_error",
+        }
     }
 
     /// If current auth binding differs from unlocked vault binding (principal or epoch), seal.

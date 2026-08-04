@@ -47,8 +47,7 @@ impl SecurityCutoff {
         self.vault_locked.load(Ordering::SeqCst)
     }
 
-    /// Explicit Task 8 unlock only (not a public desktop API until Task 8 owns it).
-    #[allow(dead_code)] // reserved for Task 8 vault unlock command
+    /// Explicit Task 8 unlock only (called after real VaultService unlock succeeds).
     pub(crate) fn unlock_vault_for_task8(&self) {
         self.vault_locked.store(false, Ordering::SeqCst);
     }

@@ -9,6 +9,7 @@ use crate::cloud_transport::{
     TransportError,
 };
 use crate::security_cutoff::SecurityCutoff;
+use crate::vault::VaultService;
 use serde::Deserialize;
 use serde_json::Value;
 use std::sync::Arc;
@@ -70,10 +71,12 @@ impl SessionInvalidatedEmitter for Arc<dyn SessionInvalidatedEmitter> {
     }
 }
 
-/// Production 401 hooks: conditional auth clear + security cutoffs + required emit.
+/// Production 401 hooks: conditional auth clear + SSH cutoff + **real** Stronghold seal + emit.
 pub struct ProductionLifecycleHooks {
     auth: Arc<AuthStore>,
     cutoff: Arc<SecurityCutoff>,
+    /// Real vault service — sealed on 401/logout (not the SecurityCutoff bool alone).
+    vault: Arc<VaultService>,
     emitter: Arc<dyn SessionInvalidatedEmitter>,
     /// Ordered event log for tests (empty in production).
     #[cfg(test)]
@@ -84,11 +87,13 @@ impl ProductionLifecycleHooks {
     pub fn new(
         auth: Arc<AuthStore>,
         cutoff: Arc<SecurityCutoff>,
+        vault: Arc<VaultService>,
         emitter: Arc<dyn SessionInvalidatedEmitter>,
     ) -> Self {
         Self {
             auth,
             cutoff,
+            vault,
             emitter,
             #[cfg(test)]
             order: std::sync::Mutex::new(Vec::new()),
@@ -105,6 +110,13 @@ impl ProductionLifecycleHooks {
         if let Ok(mut g) = self.order.lock() {
             g.push(s);
         }
+    }
+
+    /// SSH generation cutoff then real Stronghold seal (logout reason). Fail-closed attempt always.
+    fn seal_real_vault_logout(&self) {
+        self.cutoff.lock_vault();
+        // Always attempt Stronghold seal even if already locked / storage errors.
+        let _ = self.vault.on_logout();
     }
 }
 
@@ -127,7 +139,8 @@ impl SessionLifecycleHooks for ProductionLifecycleHooks {
     fn lock_vault(&self) -> Result<(), ()> {
         #[cfg(test)]
         self.push_order("lock_vault");
-        self.cutoff.lock_vault();
+        // SecurityCutoff gate + real Stronghold seal (logout reason for 401 lifecycle).
+        self.seal_real_vault_logout();
         Ok(())
     }
 
@@ -158,19 +171,22 @@ pub struct CloudBridge<B: HttpBackend = ReqwestBackend> {
     pub transport: CloudTransport<B, Arc<ProductionLifecycleHooks>>,
     pub cutoff: Arc<SecurityCutoff>,
     pub auth: Arc<AuthStore>,
+    pub vault: Arc<VaultService>,
     pub hooks: Arc<ProductionLifecycleHooks>,
 }
 
 impl CloudBridge<ReqwestBackend> {
-    /// Fallible production construction: real reqwest + **required** emitter.
+    /// Fallible production construction: real reqwest + **required** emitter + managed vault.
     pub fn new(
         auth: Arc<AuthStore>,
+        vault: Arc<VaultService>,
         emitter: Arc<dyn SessionInvalidatedEmitter>,
     ) -> Result<Self, TransportError> {
         let cutoff = Arc::new(SecurityCutoff::new());
         let hooks = Arc::new(ProductionLifecycleHooks::new(
             auth.clone(),
             cutoff.clone(),
+            vault.clone(),
             emitter,
         ));
         let backend = ReqwestBackend::new()?;
@@ -179,16 +195,18 @@ impl CloudBridge<ReqwestBackend> {
             transport,
             cutoff,
             auth,
+            vault,
             hooks,
         })
     }
 }
 
 impl<B: HttpBackend> CloudBridge<B> {
-    /// Test-only: inject mock backend + required spy emitter.
+    /// Test-only: inject mock backend + required spy emitter + vault.
     #[cfg(test)]
     pub fn with_backend(
         auth: Arc<AuthStore>,
+        vault: Arc<VaultService>,
         backend: B,
         emitter: Arc<dyn SessionInvalidatedEmitter>,
     ) -> Self {
@@ -196,6 +214,7 @@ impl<B: HttpBackend> CloudBridge<B> {
         let hooks = Arc::new(ProductionLifecycleHooks::new(
             auth.clone(),
             cutoff.clone(),
+            vault.clone(),
             emitter,
         ));
         let transport = CloudTransport::new(backend, hooks.clone());
@@ -203,6 +222,7 @@ impl<B: HttpBackend> CloudBridge<B> {
             transport,
             cutoff,
             auth,
+            vault,
             hooks,
         }
     }
@@ -210,6 +230,7 @@ impl<B: HttpBackend> CloudBridge<B> {
     #[cfg(test)]
     pub fn with_backend_cutoff(
         auth: Arc<AuthStore>,
+        vault: Arc<VaultService>,
         backend: B,
         cutoff: Arc<SecurityCutoff>,
         emitter: Arc<dyn SessionInvalidatedEmitter>,
@@ -217,6 +238,7 @@ impl<B: HttpBackend> CloudBridge<B> {
         let hooks = Arc::new(ProductionLifecycleHooks::new(
             auth.clone(),
             cutoff.clone(),
+            vault.clone(),
             emitter,
         ));
         let transport = CloudTransport::new(backend, hooks.clone());
@@ -224,6 +246,7 @@ impl<B: HttpBackend> CloudBridge<B> {
             transport,
             cutoff,
             auth,
+            vault,
             hooks,
         }
     }
@@ -262,7 +285,7 @@ impl<B: HttpBackend> CloudBridge<B> {
     }
 
     /// After successful native login: cancel prior-epoch cloud work, advance SSH,
-    /// keep vault locked. Does **not** use global cancel (new-epoch calls stay live).
+    /// seal **real** Stronghold as principal_changed. Does **not** use global cancel.
     pub fn on_successful_session_install(&self) {
         if let Some(snap) = self.auth.native_auth_snapshot() {
             let e = snap.epoch;
@@ -275,17 +298,30 @@ impl<B: HttpBackend> CloudBridge<B> {
         }
         let _ = self.cutoff.close_all_ssh();
         self.cutoff.lock_vault();
+        // Real vault seal for session transition (even if already locked).
+        let _ = self.vault.seal_for_principal_change();
     }
 
-    /// Explicit logout order: cancel → attempt auth clear → SSH cutoff → vault lock.
+    /// Explicit logout order: cancel → attempt auth clear → SSH cutoff → real Stronghold seal.
     ///
-    /// SSH/vault always run even when auth clear returns `Err` (fail closed).
+    /// SSH + real vault seal always run even when auth clear returns `Err` (fail closed).
     pub fn perform_secure_logout(&self) -> Result<(), crate::auth::AuthError> {
         self.transport.cancel_inflight();
         let auth_result = perform_logout(self.auth.as_ref());
         let _ = self.cutoff.close_all_ssh();
         self.cutoff.lock_vault();
+        let _ = self.vault.on_logout();
         auth_result
+    }
+
+    /// Notify SecurityCutoff that the real vault is unlocked (Task 8 unlock path only).
+    pub fn notify_vault_unlocked(&self) {
+        self.cutoff.unlock_vault_for_task8();
+    }
+
+    /// Notify SecurityCutoff that the real vault is locked/sealed.
+    pub fn notify_vault_locked(&self) {
+        self.cutoff.lock_vault();
     }
 }
 
@@ -305,12 +341,25 @@ mod tests {
         Arc::new(SpyEmitter::new())
     }
 
+    fn test_vault() -> Arc<VaultService> {
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "opsmate-bridge-vault-{}-{}.hold",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        Arc::new(VaultService::new(path))
+    }
+
     #[tokio::test]
     async fn cloud_call_fetches_bearer_internally_and_sanitizes() {
         let auth = Arc::new(AuthStore::new());
         auth.install_session_for_tests("t1", "alice", "admin", "sub-1");
         let backend = MockHttpBackend::new(r#"{"id":"1","token":"LEAK","name":"ok"}"#);
-        let bridge = CloudBridge::with_backend(auth, backend.clone(), spy());
+        let bridge = CloudBridge::with_backend(auth, test_vault(), backend.clone(), spy());
         let out = bridge
             .call("servers.get", &json!({"id": "srv-1"}))
             .await
@@ -331,7 +380,7 @@ mod tests {
     async fn cloud_call_unauthenticated_fails_before_outbound() {
         let auth = Arc::new(AuthStore::new());
         let backend = MockHttpBackend::new("{}");
-        let bridge = CloudBridge::with_backend(auth, backend.clone(), spy());
+        let bridge = CloudBridge::with_backend(auth, test_vault(), backend.clone(), spy());
         let err = bridge.call("auth.me", &json!({})).await.unwrap_err();
         assert_eq!(err, TransportError::Unauthenticated);
         assert_eq!(backend.request_count(), 0);
@@ -350,6 +399,7 @@ mod tests {
         assert!(!cutoff.is_vault_locked());
         let bridge = CloudBridge::with_backend_cutoff(
             auth.clone(),
+            test_vault(),
             backend,
             cutoff.clone(),
             emitter.clone(),
@@ -391,6 +441,7 @@ mod tests {
         let emitter = spy();
         let bridge = Arc::new(CloudBridge::with_backend_cutoff(
             auth.clone(),
+            test_vault(),
             hang_backend.clone(),
             cutoff.clone(),
             emitter.clone(),
@@ -445,26 +496,176 @@ mod tests {
         let auth = Arc::new(AuthStore::new());
         auth.install_session_for_tests("t1", "alice", "admin", "sub-1");
         let backend = MockHttpBackend::new("{}");
-        let bridge = CloudBridge::with_backend(auth.clone(), backend, spy());
+        let bridge = CloudBridge::with_backend(auth.clone(), test_vault(), backend, spy());
         bridge.perform_secure_logout().unwrap();
         assert!(auth.native_auth_snapshot().is_none());
         assert!(bridge.cutoff.is_vault_locked());
         assert!(bridge.cutoff.ssh_generation() >= 1);
+        assert!(!bridge.vault.is_unlocked());
+    }
+
+    fn inject_unlocked_vault(auth: &AuthStore) -> (Arc<VaultService>, std::path::PathBuf) {
+        use std::time::Instant;
+        use tauri_plugin_stronghold::stronghold::Stronghold;
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "opsmate-bridge-inject-{}-{}.hold",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let sh = Stronghold::new(&path, vec![0x91u8; 32]).expect("stronghold");
+        let vault = Arc::new(VaultService::new(path.clone()));
+        vault.test_inject_unlocked(
+            sh,
+            auth.auth_binding().expect("binding"),
+            path.clone(),
+            Instant::now(),
+        );
+        (vault, path)
+    }
+
+    fn cleanup_hold(path: &std::path::Path) {
+        let _ = std::fs::remove_file(path);
+        let mut salt = path.as_os_str().to_os_string();
+        salt.push(".salt");
+        let _ = std::fs::remove_file(std::path::PathBuf::from(salt));
+    }
+
+    #[tokio::test]
+    async fn current_epoch_401_seals_real_managed_vault() {
+        let auth = Arc::new(AuthStore::new());
+        auth.install_session_for_tests("t1", "alice", "admin", "sub-1");
+        let (vault, path) = inject_unlocked_vault(&auth);
+        assert!(vault.is_unlocked());
+
+        let backend = MockHttpBackend::new("{}");
+        backend.set_status(401);
+        let cutoff = Arc::new(SecurityCutoff::new());
+        cutoff.unlock_vault_for_tests();
+        let bridge = CloudBridge::with_backend_cutoff(
+            auth.clone(),
+            vault.clone(),
+            backend,
+            cutoff.clone(),
+            spy(),
+        );
+        let err = bridge.call("auth.me", &json!({})).await.unwrap_err();
+        assert_eq!(err, TransportError::SessionInvalidated);
+        assert!(!vault.is_unlocked());
+        assert!(cutoff.is_vault_locked());
+        let _ = vault.lock();
+        cleanup_hold(&path);
+    }
+
+    #[tokio::test]
+    async fn logout_seals_real_managed_vault() {
+        let auth = Arc::new(AuthStore::new());
+        auth.install_session_for_tests("t1", "alice", "admin", "sub-1");
+        let (vault, path) = inject_unlocked_vault(&auth);
+        assert!(vault.is_unlocked());
+        let bridge = CloudBridge::with_backend(
+            auth.clone(),
+            vault.clone(),
+            MockHttpBackend::new("{}"),
+            spy(),
+        );
+        bridge.perform_secure_logout().unwrap();
+        assert!(!vault.is_unlocked());
+        assert_eq!(
+            vault.status().unwrap().locked_reason.as_deref(),
+            Some("logout")
+        );
+        cleanup_hold(&path);
+    }
+
+    #[tokio::test]
+    async fn new_session_seals_real_vault_principal_changed() {
+        let auth = Arc::new(AuthStore::new());
+        auth.install_session_for_tests("t1", "alice", "admin", "sub-1");
+        let (vault, path) = inject_unlocked_vault(&auth);
+        assert!(vault.is_unlocked());
+        // Simulate successful re-login (new principal/epoch).
+        auth.install_session_for_tests("t1", "bob", "admin", "sub-2");
+        let bridge =
+            CloudBridge::with_backend(auth, vault.clone(), MockHttpBackend::new("{}"), spy());
+        bridge.on_successful_session_install();
+        assert!(!vault.is_unlocked());
+        assert_eq!(
+            vault.status().unwrap().locked_reason.as_deref(),
+            Some("principal_changed")
+        );
+        cleanup_hold(&path);
+    }
+
+    #[tokio::test]
+    async fn stale_epoch_401_does_not_seal_newer_session_vault() {
+        let auth = Arc::new(AuthStore::new());
+        auth.install_session_for_tests("t1", "alice", "admin", "sub-1");
+        let old_epoch = auth.native_auth_snapshot().unwrap().epoch;
+        // New session + unlock vault under new binding.
+        auth.install_session_for_tests("t1", "bob", "admin", "sub-2");
+        let (vault, path) = inject_unlocked_vault(&auth);
+        assert!(vault.is_unlocked());
+
+        let bridge = CloudBridge::with_backend(
+            auth.clone(),
+            vault.clone(),
+            MockHttpBackend::new("{}"),
+            spy(),
+        );
+        // Stale old-epoch 401 must not clear bob or seal vault.
+        let _ = bridge
+            .transport
+            .control()
+            .run_401_for_auth_epoch(old_epoch, bridge.hooks.as_ref());
+        assert!(auth.native_auth_snapshot().is_some());
+        assert_eq!(
+            auth.native_auth_snapshot().unwrap().principal.user_id,
+            "bob"
+        );
+        assert!(
+            vault.is_unlocked(),
+            "stale-epoch 401 must not seal newer session vault"
+        );
+        let _ = vault.lock();
+        cleanup_hold(&path);
     }
 
     #[tokio::test]
     async fn secure_logout_applies_cutoffs_even_when_auth_clear_fails() {
+        // Required proof: auth-clear Err must still seal the **same** real Stronghold vault.
         let auth = Arc::new(AuthStore::new());
         auth.install_session_for_tests("t1", "alice", "admin", "sub-1");
+        let (vault, path) = inject_unlocked_vault(&auth);
+        assert!(
+            vault.is_unlocked(),
+            "precondition: real managed vault must start unlocked"
+        );
         let backend = MockHttpBackend::new("{}");
         let cutoff = Arc::new(SecurityCutoff::new());
         cutoff.unlock_vault_for_tests();
-        let bridge = CloudBridge::with_backend_cutoff(auth.clone(), backend, cutoff.clone(), spy());
+        let bridge = CloudBridge::with_backend_cutoff(
+            auth.clone(),
+            vault.clone(),
+            backend,
+            cutoff.clone(),
+            spy(),
+        );
         auth.poison_lock_for_tests();
         let err = bridge.perform_secure_logout();
-        assert!(err.is_err());
+        assert!(err.is_err(), "auth clear must fail closed (poisoned lock)");
         assert_eq!(cutoff.ssh_generation(), 1);
         assert!(cutoff.is_vault_locked());
+        // Same Arc<VaultService> sealed with logout reason — not merely SecurityCutoff bool.
+        assert!(!vault.is_unlocked());
+        assert_eq!(
+            vault.status().unwrap().locked_reason.as_deref(),
+            Some("logout")
+        );
+        cleanup_hold(&path);
     }
 
     #[tokio::test]
@@ -500,6 +701,7 @@ mod tests {
         let emitter = spy();
         let bridge = Arc::new(CloudBridge::with_backend_cutoff(
             auth.clone(),
+            test_vault(),
             backend,
             cutoff.clone(),
             emitter.clone(),
