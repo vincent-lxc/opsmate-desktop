@@ -16,6 +16,9 @@ pub mod secure_prompt;
 pub mod security_cutoff;
 /// Stronghold vault core + runtime (no Stronghold plugin registration).
 pub mod vault;
+pub mod vault_idle_watchdog;
+pub mod vault_lifecycle_coordinator;
+pub mod vault_os_sleep;
 
 use auth::{
     map_auth_public, perform_begin_logto_arc, perform_handle_deep_link, perform_session_status,
@@ -26,13 +29,15 @@ use cloud_bridge::{map_cloud_public, CloudBridge, CloudCallArgs, SessionInvalida
 use cloud_transport::HttpBackend;
 use secure_prompt::{NativeSecurePrompt, SecurePrompt};
 use std::sync::Arc;
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, RunEvent, State};
 use tauri_plugin_deep_link::DeepLinkExt;
 use tauri_plugin_opener::OpenerExt;
 use vault::{
     default_snapshot_path, VaultDeleteLocalRequest, VaultError, VaultImportRequest,
     VaultImportResponse, VaultMetaItem, VaultService, VaultStatus,
 };
+use vault_idle_watchdog::{VaultIdleWatchdog, DEFAULT_IDLE_POLL};
+use vault_lifecycle_coordinator::VaultLifecycleCoordinator;
 use zeroize::Zeroizing;
 
 struct TauriBrowserOpener {
@@ -187,14 +192,11 @@ fn vault_unlock(
     finalize_vault_unlock(vault.inner(), auth.inner(), cloud.inner(), &expected, st)
 }
 
+/// Explicit user lock: SSH authority + SecurityCutoff close **before** Stronghold seal.
+/// Secret-free signature (no password/pem/path).
 #[tauri::command]
-fn vault_lock(
-    vault: State<'_, Arc<VaultService>>,
-    cloud: State<'_, Arc<CloudBridge>>,
-) -> Result<VaultStatus, String> {
-    let st = vault.lock().map_err(map_vault)?;
-    cloud.notify_vault_locked();
-    Ok(st)
+fn vault_lock(cloud: State<'_, Arc<CloudBridge>>) -> Result<VaultStatus, String> {
+    cloud.inner().perform_user_vault_lock().map_err(map_vault)
 }
 
 #[tauri::command]
@@ -253,12 +255,23 @@ pub fn run() {
                 let emitter: Arc<dyn SessionInvalidatedEmitter> = Arc::new(TauriSessionEmitter {
                     app: app.handle().clone(),
                 });
-                let cloud = CloudBridge::new(auth_store.clone(), vault, emitter).map_err(|_| {
-                    // Fixed public setup error — no raw client text.
-                    "cloud_setup_failed"
-                })?;
+                let cloud =
+                    CloudBridge::new(auth_store.clone(), vault.clone(), emitter).map_err(|_| {
+                        // Fixed public setup error — no raw client text.
+                        "cloud_setup_failed"
+                    })?;
                 let cloud = Arc::new(cloud);
                 app.manage(cloud.clone());
+
+                // Lifecycle: idle watchdog + sleep/exit coordinator (SSH cutoff before seal).
+                let lifecycle = VaultLifecycleCoordinator::new(vault, cloud.cutoff.clone());
+                app.manage(lifecycle.clone());
+                // RAII sleep/wake observers (Drop removes both); retained in managed state.
+                let os_sleep = vault_os_sleep::OsSleepRegistration::register(lifecycle.clone());
+                app.manage(os_sleep);
+                let watchdog = VaultIdleWatchdog::new(lifecycle);
+                watchdog.spawn_background(DEFAULT_IDLE_POLL);
+                app.manage(watchdog);
 
                 // Deep-link after emitter/cloud managed: success → session transition cutoffs.
                 let store = auth_store.clone();
@@ -289,8 +302,64 @@ pub fn run() {
             vault_list_meta,
             vault_delete_local,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running OpsMate Desktop");
+        .build(tauri::generate_context!())
+        .expect("error while building OpsMate Desktop")
+        .run(|app_handle, event| {
+            // Empty/secret-free lifecycle only — no payloads with tokens/paths.
+            match event {
+                // Prefer ExitRequested for seal; Exit re-enters on_process_exit which
+                // is deduped (no second SSH generation / double seal).
+                RunEvent::ExitRequested { .. } => {
+                    if let Some(reg) = app_handle.try_state::<vault_os_sleep::OsSleepRegistration>()
+                    {
+                        reg.unregister();
+                    }
+                    if let Some(lc) = app_handle.try_state::<Arc<VaultLifecycleCoordinator>>() {
+                        let _ = lc.on_process_exit();
+                    }
+                    if let Some(wd) = app_handle.try_state::<Arc<VaultIdleWatchdog>>() {
+                        wd.stop();
+                    }
+                }
+                RunEvent::Exit => {
+                    // Fail-closed if ExitRequested was skipped; still deduped.
+                    if let Some(reg) = app_handle.try_state::<vault_os_sleep::OsSleepRegistration>()
+                    {
+                        reg.unregister();
+                    }
+                    if let Some(lc) = app_handle.try_state::<Arc<VaultLifecycleCoordinator>>() {
+                        let _ = lc.on_process_exit();
+                    }
+                    // Watchdog stop on Exit fallback (not only ExitRequested).
+                    if let Some(wd) = app_handle.try_state::<Arc<VaultIdleWatchdog>>() {
+                        wd.stop();
+                    }
+                }
+                RunEvent::Resumed => {
+                    // Wake: enforce locked (seal if unlocked); never auto-unlock.
+                    if let Some(lc) = app_handle.try_state::<Arc<VaultLifecycleCoordinator>>() {
+                        let _ = lc.on_resume();
+                    }
+                }
+                // Desktop may also deliver suspend as a window event on some platforms;
+                // mobile exposes Suspended on WindowEvent.
+                RunEvent::WindowEvent { event, .. } => {
+                    #[cfg(mobile)]
+                    {
+                        use tauri::WindowEvent;
+                        if let WindowEvent::Suspended = event {
+                            if let Some(lc) =
+                                app_handle.try_state::<Arc<VaultLifecycleCoordinator>>()
+                            {
+                                let _ = lc.on_system_sleep();
+                            }
+                        }
+                    }
+                    let _ = event;
+                }
+                _ => {}
+            }
+        });
 }
 
 #[cfg(test)]
@@ -540,6 +609,28 @@ mod tests {
         assert!(lib.contains("default_snapshot_path"));
         assert!(lib.contains("app_data_dir"));
         assert!(!lib.contains(".expect(\"cloud transport"));
+    }
+
+    #[test]
+    fn production_wires_idle_watchdog_and_run_event_lifecycle() {
+        let lib = include_str!("lib.rs");
+        let prod = lib.split("#[cfg(test)]").next().unwrap_or(lib);
+        assert!(prod.contains("VaultLifecycleCoordinator::new"));
+        assert!(prod.contains("VaultIdleWatchdog::new"));
+        assert!(prod.contains("spawn_background"));
+        assert!(prod.contains("DEFAULT_IDLE_POLL"));
+        assert!(prod.contains("RunEvent::Exit"));
+        assert!(prod.contains("ExitRequested"));
+        assert!(prod.contains("on_process_exit"));
+        assert!(prod.contains("RunEvent::Resumed"));
+        assert!(prod.contains("on_resume"));
+        // build().run for lifecycle events (not bare .run(generate_context)).
+        assert!(prod.contains(".build(tauri::generate_context!())"));
+        assert!(prod.contains("OsSleepRegistration::register"));
+        assert!(prod.contains("on_process_exit"));
+        // Explicit unregister on both ExitRequested and Exit.
+        assert!(prod.contains("reg.unregister()"));
+        assert!(prod.matches("wd.stop()").count() >= 2);
     }
 
     #[test]

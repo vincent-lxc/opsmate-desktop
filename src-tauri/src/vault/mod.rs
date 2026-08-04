@@ -11,7 +11,7 @@ use russh::keys::{decode_secret_key, HashAlg};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 #[cfg(test)]
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::ThreadId;
 use std::time::{Duration, Instant};
@@ -106,6 +106,15 @@ impl From<PromptError> for VaultError {
     }
 }
 
+/// Outcome of a conditional lifecycle seal attempt (honest, not always Sealed).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SealAttempt {
+    /// Stronghold sealed with the requested reason.
+    Sealed,
+    /// Not unlocked / not still idle / gate busy — no seal; pre-seal callback **not** run.
+    NotNeeded,
+}
+
 // ─── Safe IPC DTOs (no tenant/subject/user/path/PEM from WebView) ────────────
 
 /// Design: only `unlocked` + `locked_reason` — never expose tenant/subject IDs.
@@ -113,9 +122,21 @@ impl From<PromptError> for VaultError {
 #[serde(rename_all = "camelCase")]
 pub struct VaultStatus {
     pub unlocked: bool,
-    /// Absent when unlocked. Values: not_initialized | locked | idle_timeout |
-    /// principal_changed | logout.
+    /// Absent when unlocked. Fixed public codes only, e.g.:
+    /// not_initialized | locked | idle_timeout | principal_changed | logout |
+    /// system_sleep | process_exit.
     pub locked_reason: Option<String>,
+}
+
+/// Fixed public locked_reason values (secret-free).
+pub mod locked_reason {
+    pub const NOT_INITIALIZED: &str = "not_initialized";
+    pub const LOCKED: &str = "locked";
+    pub const IDLE_TIMEOUT: &str = "idle_timeout";
+    pub const PRINCIPAL_CHANGED: &str = "principal_changed";
+    pub const LOGOUT: &str = "logout";
+    pub const SYSTEM_SLEEP: &str = "system_sleep";
+    pub const PROCESS_EXIT: &str = "process_exit";
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -259,6 +280,14 @@ pub struct VaultService {
     /// Compiled out of production builds; never alters production control flow.
     #[cfg(test)]
     credential_store_writes: AtomicU64,
+    /// Test-only: next lifecycle seal primitive returns `VaultError::Storage` **before**
+    /// `pre_seal` (so coordinator fail-closed must still close SSH).
+    #[cfg(test)]
+    fail_next_lifecycle_seal_before_pre_seal: AtomicBool,
+    /// Test-only: next lifecycle seal returns `VaultError::Storage` **after** `pre_seal`
+    /// (proves SSH/cutoff ran while Stronghold still unlocked).
+    #[cfg(test)]
+    fail_next_lifecycle_seal_after_pre_seal: AtomicBool,
 }
 
 impl VaultService {
@@ -273,7 +302,47 @@ impl VaultService {
             lifecycle: LifecycleGate::new(),
             #[cfg(test)]
             credential_store_writes: AtomicU64::new(0),
+            #[cfg(test)]
+            fail_next_lifecycle_seal_before_pre_seal: AtomicBool::new(false),
+            #[cfg(test)]
+            fail_next_lifecycle_seal_after_pre_seal: AtomicBool::new(false),
         }
+    }
+
+    /// Arm a one-shot lifecycle seal error (before pre_seal). cfg(test) only.
+    #[cfg(test)]
+    pub fn test_arm_lifecycle_seal_error_before_pre_seal(&self) {
+        self.fail_next_lifecycle_seal_before_pre_seal
+            .store(true, Ordering::SeqCst);
+    }
+
+    /// Arm a one-shot seal error after pre_seal (SSH/cutoff already applied). cfg(test) only.
+    #[cfg(test)]
+    pub fn test_arm_lifecycle_seal_error_after_pre_seal(&self) {
+        self.fail_next_lifecycle_seal_after_pre_seal
+            .store(true, Ordering::SeqCst);
+    }
+
+    #[cfg(test)]
+    fn take_lifecycle_seal_error_before_pre_seal(&self) -> bool {
+        self.fail_next_lifecycle_seal_before_pre_seal
+            .swap(false, Ordering::SeqCst)
+    }
+
+    #[cfg(not(test))]
+    fn take_lifecycle_seal_error_before_pre_seal(&self) -> bool {
+        false
+    }
+
+    #[cfg(test)]
+    fn take_lifecycle_seal_error_after_pre_seal(&self) -> bool {
+        self.fail_next_lifecycle_seal_after_pre_seal
+            .swap(false, Ordering::SeqCst)
+    }
+
+    #[cfg(not(test))]
+    fn take_lifecycle_seal_error_after_pre_seal(&self) -> bool {
+        false
     }
 
     /// Observe a credential secret store mutation. No-op outside tests.
@@ -296,22 +365,12 @@ impl VaultService {
         self.default_snapshot.clone()
     }
 
+    /// Snapshot only — **no** idle seal side effects.
+    /// Production idle sealing is exclusively via
+    /// [`VaultLifecycleCoordinator`](crate::vault_lifecycle_coordinator::VaultLifecycleCoordinator)
+    /// (SecurityCutoff before Stronghold).
     pub fn status(&self) -> Result<VaultStatus, VaultError> {
-        self.maybe_idle_seal()?;
-        let guard = self.lock_inner()?;
-        match &*guard {
-            VaultInner::Locked {
-                snapshot_path,
-                reason,
-            } => Ok(VaultStatus {
-                unlocked: false,
-                locked_reason: Some(resolve_locked_reason(snapshot_path, reason).to_string()),
-            }),
-            VaultInner::Unlocked(_) => Ok(VaultStatus {
-                unlocked: true,
-                locked_reason: None,
-            }),
-        }
+        self.status_without_idle_seal()
     }
 
     pub fn init_with_password(
@@ -659,34 +718,21 @@ impl VaultService {
     }
 
     /// Begin a vault op. Never nests gate waits with `inner` holds.
-    /// If vault is idle, nonblocking-try seal (skip if Operating); else claim Operating.
+    ///
+    /// If idle-expired while unlocked: return `Locked` **without** sealing Stronghold and
+    /// **without** refreshing activity. Production idle seal (cutoff-before-seal) is only via
+    /// the lifecycle coordinator / watchdog tick.
     fn enter_op(&self) -> Result<OpGuard<'_>, VaultError> {
         // Observe vault without holding the gate.
-        let idle_unlocked = {
+        {
             let guard = self.lock_inner()?;
             match &*guard {
                 VaultInner::Locked { .. } => return Err(VaultError::Locked),
-                VaultInner::Unlocked(u) => u.last_activity.elapsed() >= VAULT_IDLE_TIMEOUT,
-            }
-        };
-
-        if idle_unlocked {
-            // Nonblocking: if Operating, skip seal and fail this op as Locked after claim fails,
-            // or if we can seal, do so.
-            if let Some(_seal) = self.try_claim_sealing()? {
-                let still_idle = {
-                    let guard = self.lock_inner()?;
-                    match &*guard {
-                        VaultInner::Unlocked(u) => u.last_activity.elapsed() >= VAULT_IDLE_TIMEOUT,
-                        VaultInner::Locked { .. } => false,
-                    }
-                };
-                if still_idle {
-                    self.close_all_sessions_before_seal();
-                    self.seal_vault("idle_timeout")?;
+                VaultInner::Unlocked(u) if u.last_activity.elapsed() >= VAULT_IDLE_TIMEOUT => {
+                    // Fail closed: do not seal here (would bypass SecurityCutoff).
                     return Err(VaultError::Locked);
                 }
-                // Activity refreshed; drop seal claim and take Operating below.
+                VaultInner::Unlocked(_) => {}
             }
         }
 
@@ -700,8 +746,8 @@ impl VaultService {
                     return Err(VaultError::Locked);
                 }
                 VaultInner::Unlocked(u) if u.last_activity.elapsed() >= VAULT_IDLE_TIMEOUT => {
+                    // Expired under claim — fail without seal and without touching last_activity.
                     drop(op);
-                    let _ = self.maybe_idle_seal();
                     return Err(VaultError::Locked);
                 }
                 VaultInner::Unlocked(_) => {}
@@ -737,10 +783,92 @@ impl VaultService {
         }
     }
 
-    /// Explicit idle evaluation for the desktop watchdog (no WebView call required).
-    /// Closes sessions before seal when idle timeout elapsed.
-    pub fn check_idle_and_seal(&self) -> Result<(), VaultError> {
-        self.maybe_idle_seal()
+    /// Read-only: unlocked and last activity older than [`VAULT_IDLE_TIMEOUT`].
+    /// No seal, no SSH, no side effects (for coordinator pre-check only — not authoritative).
+    pub fn idle_timeout_due(&self) -> bool {
+        self.inner
+            .lock()
+            .map(|g| match &*g {
+                VaultInner::Unlocked(u) => u.last_activity.elapsed() >= VAULT_IDLE_TIMEOUT,
+                VaultInner::Locked { .. } => false,
+            })
+            .unwrap_or(false)
+    }
+
+    /// Read-only unlocked probe for lifecycle (crate-internal).
+    pub(crate) fn is_unlocked_inner(&self) -> bool {
+        self.inner
+            .lock()
+            .map(|g| matches!(*g, VaultInner::Unlocked(_)))
+            .unwrap_or(false)
+    }
+
+    /// Idle TOCTOU-safe seal: claim SEALING, recheck unlocked+idle under claim, then
+    /// `pre_seal` (SSH cutoff) only if still due, then seal. If activity refreshed →
+    /// `NotNeeded` with **zero** pre_seal side effects.
+    pub fn seal_if_still_idle_with_pre_seal<F>(
+        &self,
+        pre_seal: F,
+    ) -> Result<SealAttempt, VaultError>
+    where
+        F: FnOnce(),
+    {
+        // Nonblocking: if Operating or another sealer, skip this tick (watchdog retries).
+        let Some(_seal_guard) = self.try_claim_sealing()? else {
+            return Ok(SealAttempt::NotNeeded);
+        };
+        let still_due = {
+            let guard = self.lock_inner()?;
+            match &*guard {
+                VaultInner::Unlocked(u) => u.last_activity.elapsed() >= VAULT_IDLE_TIMEOUT,
+                VaultInner::Locked { .. } => false,
+            }
+        };
+        if !still_due {
+            // Drop SealGuard → release SEALING; pre_seal never ran.
+            return Ok(SealAttempt::NotNeeded);
+        }
+        // Still unlocked + idle under SEALING (no concurrent op can refresh activity).
+        if self.take_lifecycle_seal_error_before_pre_seal() {
+            return Err(VaultError::Storage);
+        }
+        pre_seal();
+        if self.take_lifecycle_seal_error_after_pre_seal() {
+            return Err(VaultError::Storage);
+        }
+        self.close_all_sessions_before_seal();
+        self.seal_vault("idle_timeout")?;
+        Ok(SealAttempt::Sealed)
+    }
+
+    /// Unlocked seal with pre-seal callback under SEALING claim (sleep / exit / wake / user lock).
+    /// Rechecks unlocked after claim; if already locked → `NotNeeded` (no pre_seal).
+    pub fn seal_if_unlocked_with_pre_seal<F>(
+        &self,
+        reason: &'static str,
+        pre_seal: F,
+    ) -> Result<SealAttempt, VaultError>
+    where
+        F: FnOnce(),
+    {
+        if !self.is_unlocked_inner() {
+            return Ok(SealAttempt::NotNeeded);
+        }
+        // Blocking claim: wait for OPERATING ops to finish (exit/sleep must complete).
+        let _seal_guard = self.claim_sealing()?;
+        if !self.is_unlocked_inner() {
+            return Ok(SealAttempt::NotNeeded);
+        }
+        if self.take_lifecycle_seal_error_before_pre_seal() {
+            return Err(VaultError::Storage);
+        }
+        pre_seal();
+        if self.take_lifecycle_seal_error_after_pre_seal() {
+            return Err(VaultError::Storage);
+        }
+        self.close_all_sessions_before_seal();
+        self.seal_vault(reason)?;
+        Ok(SealAttempt::Sealed)
     }
 
     pub fn on_logout(&self) -> Result<(), VaultError> {
@@ -754,12 +882,10 @@ impl VaultService {
         Ok(())
     }
 
-    /// True when Stronghold is currently unlocked (native-only probe).
+    /// True when Stronghold is currently unlocked (test probe only).
+    #[cfg(test)]
     pub fn is_unlocked(&self) -> bool {
-        self.inner
-            .lock()
-            .map(|g| matches!(*g, VaultInner::Unlocked(_)))
-            .unwrap_or(false)
+        self.is_unlocked_inner()
     }
 
     /// Map vault errors to fixed public IPC codes (never raw secret text).
@@ -830,39 +956,6 @@ impl VaultService {
             }
             VaultInner::Unlocked(_) => Ok(()),
         }
-    }
-
-    /// Idle seal if unlocked past timeout — closes sessions then locks.
-    ///
-    /// **Nonblocking**: if OPERATING or SEALING, skip this tick (no Condvar wait).
-    /// [`SealGuard`] clears SEALING on exit (panic-safe). Never nests gate with `inner`.
-    fn maybe_idle_seal(&self) -> Result<(), VaultError> {
-        let idle = {
-            let guard = self.lock_inner()?;
-            match &*guard {
-                VaultInner::Unlocked(u) => u.last_activity.elapsed() >= VAULT_IDLE_TIMEOUT,
-                VaultInner::Locked { .. } => false,
-            }
-        };
-        if !idle {
-            return Ok(());
-        }
-        let Some(_seal) = self.try_claim_sealing()? else {
-            return Ok(()); // Operating or already sealing — skip
-        };
-        let still_idle = {
-            let guard = self.lock_inner()?;
-            match &*guard {
-                VaultInner::Unlocked(u) => u.last_activity.elapsed() >= VAULT_IDLE_TIMEOUT,
-                VaultInner::Locked { .. } => false,
-            }
-        };
-        if !still_idle {
-            return Ok(());
-        }
-        self.close_all_sessions_before_seal();
-        self.seal_vault("idle_timeout")?;
-        Ok(())
     }
 
     pub fn import_pem(
@@ -1407,7 +1500,9 @@ impl Drop for SealGuard<'_> {
 /// Explicit operational reasons (idle/logout/principal) always win over path heuristics.
 fn resolve_locked_reason(snapshot_path: &Path, reason: &'static str) -> &'static str {
     match reason {
-        "idle_timeout" | "logout" | "principal_changed" => reason,
+        // Fixed lifecycle / user-lock reasons always surface as-is (secret-free codes).
+        "idle_timeout" | "logout" | "principal_changed" | "system_sleep" | "process_exit"
+        | "locked" => reason,
         "not_initialized" if snapshot_path.exists() && salt_path(snapshot_path).exists() => {
             "locked"
         }

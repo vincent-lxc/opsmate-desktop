@@ -320,8 +320,47 @@ impl<B: HttpBackend> CloudBridge<B> {
     }
 
     /// Notify SecurityCutoff that the real vault is locked/sealed.
+    ///
+    /// **Does not** advance SSH generation — use [`Self::perform_user_vault_lock`] for
+    /// explicit user lock (SSH close + cutoff **before** Stronghold seal).
     pub fn notify_vault_locked(&self) {
         self.cutoff.lock_vault();
+    }
+
+    /// Explicit user vault lock: close all SSH authority + lock SecurityCutoff **before**
+    /// real Stronghold seal (`locked` reason). IPC `vault_lock` must call this — not
+    /// `vault.lock()` then `notify_vault_locked()` (bool-only notify leaves SSH open).
+    ///
+    /// On seal error: ensure SSH generation advanced exactly once if pre_seal did not run,
+    /// always lock cutoff, return original `VaultError`. Uses generation-before comparison
+    /// only — a locked cutoff bool is not proof SSH was closed (bool can be sticky while
+    /// an old SSH generation remains live).
+    pub fn perform_user_vault_lock(
+        &self,
+    ) -> Result<crate::vault::VaultStatus, crate::vault::VaultError> {
+        use crate::vault::SealAttempt;
+
+        let gen_before = self.cutoff.ssh_generation();
+        match self.vault.seal_if_unlocked_with_pre_seal("locked", || {
+            let _ = self.cutoff.close_all_ssh();
+            self.cutoff.lock_vault();
+        }) {
+            Ok(SealAttempt::Sealed) => self.vault.status(),
+            Ok(SealAttempt::NotNeeded) => {
+                // Already sealed: ensure cutoff bool without SSH generation bump.
+                self.cutoff.lock_vault();
+                self.vault.status()
+            }
+            Err(e) => {
+                // Fail-closed via generation: pre_seal may have already advanced gen.
+                // Never use the cutoff vault-locked bool to decide whether to close SSH.
+                if self.cutoff.ssh_generation() == gen_before {
+                    let _ = self.cutoff.close_all_ssh();
+                }
+                self.cutoff.lock_vault();
+                Err(e)
+            }
+        }
     }
 }
 
@@ -665,6 +704,237 @@ mod tests {
             vault.status().unwrap().locked_reason.as_deref(),
             Some("logout")
         );
+        cleanup_hold(&path);
+    }
+
+    /// Behavioral order proof: unlocked real VaultService + unlocked cutoff → pre_seal
+    /// advances SSH gen while Stronghold still unlocked → then seal with `locked`.
+    /// Not a fake label Vec: uses after-pre_seal fail arm + success path.
+    #[tokio::test]
+    async fn perform_user_vault_lock_ssh_before_stronghold_and_locked_reason() {
+        use crate::vault::{VaultError, VaultService};
+        use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+
+        let auth = Arc::new(AuthStore::new());
+        auth.install_session_for_tests("t1", "alice", "admin", "sub-1");
+        let (vault, path) = inject_unlocked_vault(&auth);
+        assert!(vault.is_unlocked());
+
+        let cutoff = Arc::new(SecurityCutoff::new());
+        cutoff.unlock_vault_for_tests();
+        assert!(!cutoff.is_vault_locked());
+        assert_eq!(cutoff.ssh_generation(), 0);
+
+        // Phase 1 — order proof: arm error *after* pre_seal so SSH/cutoff run while
+        // Stronghold remains unlocked (real generation/cutoff, not label vector).
+        vault.test_arm_lifecycle_seal_error_after_pre_seal();
+        let bridge = CloudBridge::with_backend_cutoff(
+            auth.clone(),
+            vault.clone(),
+            MockHttpBackend::new("{}"),
+            cutoff.clone(),
+            spy(),
+        );
+        let err = bridge
+            .perform_user_vault_lock()
+            .expect_err("armed seal error");
+        assert!(matches!(err, VaultError::Storage));
+        assert!(
+            vault.is_unlocked(),
+            "Stronghold must still be unlocked when seal fails after pre_seal"
+        );
+        assert!(
+            cutoff.is_vault_locked(),
+            "cutoff must remain closed after pre_seal even when seal fails"
+        );
+        assert_eq!(
+            cutoff.ssh_generation(),
+            1,
+            "exactly one SSH generation transition on user lock pre_seal"
+        );
+        // Fixed public code path (IPC maps Storage → vault_storage_error).
+        assert_eq!(VaultService::map_vault_public(err), "vault_storage_error");
+
+        // Phase 2 — success: complete user lock on same still-unlocked Stronghold.
+        let gen_before_ok = cutoff.ssh_generation();
+        // Cutoff already locked; pre_seal still bumps SSH once more when sealing succeeds.
+        // Unlock cutoff bool only so we can observe lock again; gen continues from 1.
+        cutoff.unlock_vault_for_tests();
+        let st = bridge.perform_user_vault_lock().expect("user lock");
+        assert!(!st.unlocked);
+        assert_eq!(st.locked_reason.as_deref(), Some("locked"));
+        assert!(!vault.is_unlocked());
+        assert!(cutoff.is_vault_locked());
+        assert_eq!(
+            cutoff.ssh_generation(),
+            gen_before_ok + 1,
+            "success path: exactly one further generation transition"
+        );
+
+        // Already-locked path: NotNeeded — no extra SSH generation.
+        let gen_locked = cutoff.ssh_generation();
+        let st2 = bridge.perform_user_vault_lock().expect("idempotent");
+        assert!(!st2.unlocked);
+        assert_eq!(cutoff.ssh_generation(), gen_locked);
+        assert!(cutoff.is_vault_locked());
+
+        // Source wiring: production helper uses pre_seal primitive (not lock-then-notify).
+        let saw_unlocked_in_primitive = AtomicBool::new(false);
+        // Re-inject for isolated primitive order observation (callback while unlocked).
+        let (vault2, path2) = inject_unlocked_vault(&auth);
+        let cutoff2 = Arc::new(SecurityCutoff::new());
+        cutoff2.unlock_vault_for_tests();
+        let vref = vault2.clone();
+        let cref = cutoff2.clone();
+        vault2
+            .seal_if_unlocked_with_pre_seal("locked", || {
+                assert!(
+                    vref.is_unlocked(),
+                    "pre_seal must observe vault still unlocked"
+                );
+                saw_unlocked_in_primitive.store(true, AtomicOrdering::SeqCst);
+                let _ = cref.close_all_ssh();
+                cref.lock_vault();
+                assert!(cref.is_vault_locked());
+                assert!(vref.is_unlocked(), "still unlocked after SSH/cutoff");
+            })
+            .unwrap();
+        assert!(saw_unlocked_in_primitive.load(AtomicOrdering::SeqCst));
+        assert!(!vault2.is_unlocked());
+        assert_eq!(
+            vault2.status().unwrap().locked_reason.as_deref(),
+            Some("locked")
+        );
+        assert_eq!(cutoff2.ssh_generation(), 1);
+
+        let src = include_str!("cloud_bridge.rs");
+        let helper = src
+            .split("fn perform_user_vault_lock")
+            .nth(1)
+            .expect("helper")
+            .split("/// Map transport")
+            .next()
+            .unwrap();
+        assert!(helper.contains("seal_if_unlocked_with_pre_seal"));
+        assert!(helper.contains("close_all_ssh"));
+        assert!(helper.contains("\"locked\""));
+        let lib = include_str!("lib.rs");
+        let lock_fn = lib
+            .split("fn vault_lock")
+            .nth(1)
+            .unwrap()
+            .split("#[tauri::command]")
+            .next()
+            .unwrap();
+        assert!(lock_fn.contains("perform_user_vault_lock"));
+        assert!(!lock_fn.contains("vault.lock()"));
+        assert!(!lock_fn.contains("notify_vault_locked"));
+
+        cleanup_hold(&path);
+        cleanup_hold(&path2);
+    }
+
+    #[tokio::test]
+    async fn perform_user_vault_lock_error_before_pre_seal_fail_closed() {
+        use crate::vault::VaultError;
+
+        let auth = Arc::new(AuthStore::new());
+        auth.install_session_for_tests("t1", "alice", "admin", "sub-1");
+        let (vault, path) = inject_unlocked_vault(&auth);
+        let cutoff = Arc::new(SecurityCutoff::new());
+        cutoff.unlock_vault_for_tests();
+        assert!(!cutoff.is_vault_locked());
+        assert_eq!(cutoff.ssh_generation(), 0);
+
+        vault.test_arm_lifecycle_seal_error_before_pre_seal();
+        let bridge = CloudBridge::with_backend_cutoff(
+            auth,
+            vault.clone(),
+            MockHttpBackend::new("{}"),
+            cutoff.clone(),
+            spy(),
+        );
+        let err = bridge
+            .perform_user_vault_lock()
+            .expect_err("before pre_seal");
+        assert!(matches!(err, VaultError::Storage));
+        assert!(
+            cutoff.is_vault_locked(),
+            "fail-closed must lock cutoff when pre_seal never ran"
+        );
+        assert_eq!(cutoff.ssh_generation(), 1);
+        // Vault may remain unlocked (seal never reached); authority is still closed.
+        assert!(vault.is_unlocked());
+        cleanup_hold(&path);
+    }
+
+    /// Critical: locked cutoff bool must NOT skip SSH close on Err before pre_seal.
+    /// Bool-only check would leave old generation live (is_vault_locked true + gen valid).
+    #[tokio::test]
+    async fn perform_user_vault_lock_err_before_pre_seal_when_cutoff_bool_already_locked() {
+        use crate::vault::VaultError;
+
+        let auth = Arc::new(AuthStore::new());
+        auth.install_session_for_tests("t1", "alice", "admin", "sub-1");
+        let (vault, path) = inject_unlocked_vault(&auth);
+        assert!(vault.is_unlocked(), "precondition: real vault unlocked");
+
+        // Default SecurityCutoff starts vault_locked=true; do NOT unlock.
+        // Simulate sticky locked bool while SSH generation is still live/valid.
+        let cutoff = Arc::new(SecurityCutoff::new());
+        assert!(
+            cutoff.is_vault_locked(),
+            "precondition: cutoff bool starts locked"
+        );
+        let captured_gen = cutoff.ssh_generation();
+        assert_eq!(captured_gen, 0);
+        assert!(
+            cutoff.ssh_session_still_valid(captured_gen),
+            "precondition: captured generation still valid (old SSH live)"
+        );
+
+        vault.test_arm_lifecycle_seal_error_before_pre_seal();
+        let bridge = CloudBridge::with_backend_cutoff(
+            auth,
+            vault.clone(),
+            MockHttpBackend::new("{}"),
+            cutoff.clone(),
+            spy(),
+        );
+        let err = bridge
+            .perform_user_vault_lock()
+            .expect_err("error before pre_seal");
+        assert!(matches!(err, VaultError::Storage));
+        assert_eq!(
+            cutoff.ssh_generation(),
+            captured_gen + 1,
+            "generation must advance exactly once despite locked bool"
+        );
+        assert!(
+            !cutoff.ssh_session_still_valid(captured_gen),
+            "prior SSH capture must be invalidated"
+        );
+        assert!(cutoff.is_vault_locked());
+        // Vault may remain unlocked; authority is closed.
+        assert!(vault.is_unlocked());
+
+        // Helper must not use is_vault_locked() for SSH fail-closed decision.
+        let helper = include_str!("cloud_bridge.rs")
+            .split("fn perform_user_vault_lock")
+            .nth(1)
+            .expect("helper")
+            .split("/// Map transport")
+            .next()
+            .unwrap();
+        assert!(
+            helper.contains("gen_before"),
+            "Err path must compare generation before seal"
+        );
+        assert!(
+            !helper.contains("is_vault_locked()"),
+            "must not infer SSH closed from cutoff bool"
+        );
+
         cleanup_hold(&path);
     }
 
