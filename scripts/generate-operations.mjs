@@ -196,6 +196,16 @@ function validate(file) {
     if (!Array.isArray(op.pathParams)) die(`${op.id}: pathParams must be an array`);
     if (!Array.isArray(op.queryFields)) die(`${op.id}: queryFields must be an array`);
     if (!Array.isArray(op.bodyFields)) die(`${op.id}: bodyFields must be an array`);
+    if (op.optionalBodyFields !== undefined && !Array.isArray(op.optionalBodyFields)) {
+      die(`${op.id}: optionalBodyFields must be an array when present`);
+    }
+    const optionalBody = op.optionalBodyFields ?? [];
+    for (const f of optionalBody) {
+      if (!op.bodyFields.includes(f)) {
+        die(`${op.id}: optionalBodyFields entry ${f} must also be in bodyFields`);
+      }
+    }
+    op.optionalBodyFields = optionalBody;
 
     const fixed = normalizeFixedBody(op.fixedBodyFields);
     op.fixedBodyFields = fixed;
@@ -293,6 +303,7 @@ function contentHash(file) {
       pathParams: op.pathParams,
       queryFields: op.queryFields,
       bodyFields: op.bodyFields,
+      optionalBodyFields: op.optionalBodyFields ?? [],
       fixedBodyFields: op.fixedBodyFields ?? {},
     })),
   };
@@ -770,19 +781,33 @@ function generateOpenApi(file) {
         pathsYaml += `            schema:\n`;
         pathsYaml += `              type: object\n`;
         pathsYaml += `              additionalProperties: false\n`;
-        if (op.bodyFields.length) {
+        const optionalBody = new Set(op.optionalBodyFields ?? []);
+        const requiredBody = op.bodyFields.filter((f) => !optionalBody.has(f));
+        if (requiredBody.length) {
           pathsYaml += `              required:\n`;
-          for (const f of op.bodyFields) {
+          for (const f of requiredBody) {
             pathsYaml += `                - ${f}\n`;
           }
         }
         pathsYaml += `              properties:\n`;
         for (const f of op.bodyFields) {
           const nativeOwned = op.invocation === "native_only";
+          const isOptional = optionalBody.has(f);
           pathsYaml += `                ${f}:\n`;
-          pathsYaml += `                  type: string\n`;
+          if (isOptional) {
+            // Nullable optional wire field (e.g. expected_fingerprint on TOFU).
+            pathsYaml += `                  type:\n`;
+            pathsYaml += `                    - string\n`;
+            pathsYaml += `                    - "null"\n`;
+          } else {
+            pathsYaml += `                  type: string\n`;
+          }
           if (nativeOwned) {
-            pathsYaml += `                  description: Rust-owned native wire field (not WebView/IPC input; PKCE material for auth.exchange)\n`;
+            if (op.id === "auth.exchange") {
+              pathsYaml += `                  description: Rust-owned native wire field (not WebView/IPC input; PKCE material for auth.exchange)\n`;
+            } else {
+              pathsYaml += `                  description: Rust-owned native wire field (not WebView/IPC input)\n`;
+            }
             pathsYaml += `                  x-owned-by: native\n`;
             pathsYaml += `                  x-ipc-input: false\n`;
           } else {

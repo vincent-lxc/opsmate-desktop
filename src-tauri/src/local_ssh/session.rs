@@ -12,7 +12,7 @@
 // Production: attach + sink; full registry API reserved for 8B3 (unit-tested).
 #![cfg_attr(not(test), allow(dead_code))]
 
-use super::prepare::{LocalSshError, LocalSshOpenRequest, PreparedLocalSshOpen};
+use super::prepare::{LocalSshConnectAuthority, LocalSshError, LocalSshOpenRequest};
 use crate::auth::{base64url_nopad, AuthBinding, AuthStore, NativePrincipal, RandomSource};
 use crate::security_cutoff::SecurityCutoff;
 use crate::vault::{validate_id, SessionLifecycleSink, VaultService};
@@ -94,9 +94,57 @@ pub struct LocalSshRegistrationTicket {
     credential_invalidation_epoch: u64,
 }
 
+/// Secret-free barrier snapshot for mid-handshake revalidation (TOFU post-cloud).
+/// Cloneable so the handshake can revalidate while the ticket is still held for complete.
+#[derive(Clone)]
+pub struct TicketBarrierSnapshot {
+    pub principal: NativePrincipal,
+    pub auth_epoch: u64,
+    pub server_id: String,
+    pub credential_id: String,
+    pub prepared_ssh_generation: u64,
+    pub registry_global_generation: u64,
+    pub credential_invalidation_epoch: u64,
+}
+
+impl LocalSshRegistrationTicket {
+    /// Capture barriers for handshake revalidation without consuming the ticket.
+    pub fn barrier_snapshot(&self) -> TicketBarrierSnapshot {
+        TicketBarrierSnapshot {
+            principal: self.principal.clone(),
+            auth_epoch: self.auth_epoch,
+            server_id: self.server_id.clone(),
+            credential_id: self.credential_id.clone(),
+            prepared_ssh_generation: self.prepared_ssh_generation,
+            registry_global_generation: self.registry_global_generation,
+            credential_invalidation_epoch: self.credential_invalidation_epoch,
+        }
+    }
+}
+
 impl std::fmt::Debug for LocalSshRegistrationTicket {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("LocalSshRegistrationTicket")
+            .field("principal", &"<redacted>")
+            .field("auth_epoch", &"<redacted>")
+            .field("server_id", &"<redacted>")
+            .field("credential_id", &"<redacted>")
+            .field("prepared_ssh_generation", &self.prepared_ssh_generation)
+            .field(
+                "registry_global_generation",
+                &self.registry_global_generation,
+            )
+            .field(
+                "credential_invalidation_epoch",
+                &self.credential_invalidation_epoch,
+            )
+            .finish()
+    }
+}
+
+impl std::fmt::Debug for TicketBarrierSnapshot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TicketBarrierSnapshot")
             .field("principal", &"<redacted>")
             .field("auth_epoch", &"<redacted>")
             .field("server_id", &"<redacted>")
@@ -215,10 +263,28 @@ impl LocalSshSessionManager {
         self.close_invocations.load(Ordering::SeqCst)
     }
 
+    /// Mid-handshake: ticket registry barriers still current (close_all / per-cred close).
+    /// Used by 8B3a TOFU revalidation after cloud CAS and before local known-hosts write.
+    pub fn ensure_ticket_barriers_current(
+        &self,
+        barriers: &TicketBarrierSnapshot,
+    ) -> Result<(), LocalSshError> {
+        let g = self.inner.lock().map_err(|_| LocalSshError::Internal)?;
+        if g.global_generation != barriers.registry_global_generation {
+            return Err(LocalSshError::SshCutoff);
+        }
+        let key = CredentialKey::from_principal(&barriers.principal, &barriers.credential_id);
+        let cred_epoch = g.credential_epochs.get(&key).copied().unwrap_or(0);
+        if cred_epoch != barriers.credential_invalidation_epoch {
+            return Err(LocalSshError::SshCutoff);
+        }
+        Ok(())
+    }
+
     /// Phase 1: secret-free request only (no vault lease yet).
     ///
     /// Required 8B3 order: `begin(request)` → `prepare_local_ssh_open(request)` →
-    /// connector → `complete_established(ticket, prepared, close)`.
+    /// connector → `complete_established(ticket, authority, close)`.
     pub fn begin_establishment(
         &self,
         req: &LocalSshOpenRequest,
@@ -248,20 +314,21 @@ impl LocalSshSessionManager {
         })
     }
 
-    /// Phase 2: consume ticket + prepared + live close handle; register only if still current.
+    /// Phase 2: consume ticket + secret-free authority + live close handle; register only if still current.
     ///
+    /// Authority must not carry PEM/passphrase — split the lease-bearing prepared open first.
     /// On **any** `Err` after receiving `close`, invokes `close` exactly once outside the mutex.
     pub fn complete_established(
         &self,
         ticket: LocalSshRegistrationTicket,
-        prepared: PreparedLocalSshOpen,
+        authority: LocalSshConnectAuthority,
         close: Arc<dyn SessionCloseHandle>,
     ) -> Result<LocalSshSessionId, LocalSshError> {
         // Guard: close handle if we return Err without transferring ownership to a record.
         // Note: dropping the Arc alone does not call on_close; only the Err path below
         // invokes the handle. A panic inside complete_established_inner will not close.
         let mut close_on_err: Option<Arc<dyn SessionCloseHandle>> = Some(close);
-        let result = self.complete_established_inner(ticket, prepared, &mut close_on_err);
+        let result = self.complete_established_inner(ticket, authority, &mut close_on_err);
         if let Some(c) = close_on_err.take() {
             // Error path: established transport must not leak after a failed complete.
             if result.is_err() {
@@ -274,21 +341,21 @@ impl LocalSshSessionManager {
     fn complete_established_inner(
         &self,
         ticket: LocalSshRegistrationTicket,
-        prepared: PreparedLocalSshOpen,
+        authority: LocalSshConnectAuthority,
         close_slot: &mut Option<Arc<dyn SessionCloseHandle>>,
     ) -> Result<LocalSshSessionId, LocalSshError> {
-        if !ticket_matches_prepared(&ticket, &prepared) {
+        if !ticket_matches_authority(&ticket, &authority) {
             return Err(LocalSshError::BindingMismatch);
         }
         let expected = AuthBinding {
-            principal: prepared.principal.clone(),
-            epoch: prepared.epoch,
+            principal: authority.principal.clone(),
+            epoch: authority.epoch,
         };
-        self.ensure_live_authority(&expected, prepared.ssh_generation)?;
+        self.ensure_live_authority(&expected, authority.ssh_generation)?;
 
         let close = close_slot.take().ok_or(LocalSshError::Internal)?;
 
-        let session_id = match self.insert_session(&ticket, &prepared, close) {
+        let session_id = match self.insert_session(&ticket, &authority, close) {
             Ok(id) => id,
             Err((e, returned_close)) => {
                 // Put close back so outer path closes outside mutex.
@@ -307,16 +374,16 @@ impl LocalSshSessionManager {
             &ticket,
             session_id.as_str(),
             &expected,
-            prepared.ssh_generation,
+            authority.ssh_generation,
         ) {
             // If lifecycle already drained/closed, do not double-close.
             if let Some(rec) = self.remove_raw(session_id.as_str()) {
                 self.invoke_close(rec);
             }
-            drop(prepared);
+            drop(authority);
             return Err(e);
         }
-        drop(prepared);
+        drop(authority);
         Ok(session_id)
     }
 
@@ -357,7 +424,7 @@ impl LocalSshSessionManager {
     fn insert_session(
         &self,
         ticket: &LocalSshRegistrationTicket,
-        prepared: &PreparedLocalSshOpen,
+        authority: &LocalSshConnectAuthority,
         close: Arc<dyn SessionCloseHandle>,
     ) -> Result<LocalSshSessionId, (LocalSshError, Arc<dyn SessionCloseHandle>)> {
         let mut inner = match self.inner.lock() {
@@ -368,7 +435,7 @@ impl LocalSshSessionManager {
         if inner.global_generation != ticket.registry_global_generation {
             return Err((LocalSshError::SshCutoff, close));
         }
-        let key = CredentialKey::from_principal(&prepared.principal, &prepared.credential_id);
+        let key = CredentialKey::from_principal(&authority.principal, &authority.credential_id);
         let cred_epoch = inner.credential_epochs.get(&key).copied().unwrap_or(0);
         if cred_epoch != ticket.credential_invalidation_epoch {
             return Err((LocalSshError::SshCutoff, close));
@@ -380,11 +447,11 @@ impl LocalSshSessionManager {
         };
 
         let record = SessionRecord {
-            principal: prepared.principal.clone(),
-            epoch: prepared.epoch,
-            server_id: prepared.server_id.clone(),
-            credential_id: prepared.credential_id.clone(),
-            ssh_generation: prepared.ssh_generation,
+            principal: authority.principal.clone(),
+            epoch: authority.epoch,
+            server_id: authority.server_id.clone(),
+            credential_id: authority.credential_id.clone(),
+            ssh_generation: authority.ssh_generation,
             registered_global_generation: ticket.registry_global_generation,
             registered_credential_epoch: ticket.credential_invalidation_epoch,
             session_id: session_id.clone(),
@@ -576,15 +643,15 @@ impl LocalSshSessionManager {
     }
 }
 
-fn ticket_matches_prepared(
+fn ticket_matches_authority(
     ticket: &LocalSshRegistrationTicket,
-    prepared: &PreparedLocalSshOpen,
+    authority: &LocalSshConnectAuthority,
 ) -> bool {
-    ticket.principal == prepared.principal
-        && ticket.auth_epoch == prepared.epoch
-        && ticket.server_id == prepared.server_id
-        && ticket.credential_id == prepared.credential_id
-        && ticket.prepared_ssh_generation == prepared.ssh_generation
+    ticket.principal == authority.principal
+        && ticket.auth_epoch == authority.epoch
+        && ticket.server_id == authority.server_id
+        && ticket.credential_id == authority.credential_id
+        && ticket.prepared_ssh_generation == authority.ssh_generation
 }
 
 impl SessionLifecycleSink for LocalSshSessionManager {
@@ -672,12 +739,10 @@ pub fn attach_session_manager_to_vault_with_rng(
 mod tests {
     use super::*;
     use crate::auth::AuthError;
-    use crate::vault::VaultCredentialLease;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering as AtomicOrdering};
     use std::sync::Mutex as StdMutex;
     use std::time::Instant;
     use tauri_plugin_stronghold::stronghold::Stronghold;
-    use zeroize::Zeroizing;
 
     struct SeqRng {
         bytes: Vec<u8>,
@@ -787,13 +852,13 @@ mod tests {
         (auth, vault, cutoff, path, binding)
     }
 
-    fn fixture_prepared(
+    fn fixture_authority(
         binding: &AuthBinding,
         server_id: &str,
         credential_id: &str,
         gen: u64,
-    ) -> PreparedLocalSshOpen {
-        PreparedLocalSshOpen {
+    ) -> LocalSshConnectAuthority {
+        LocalSshConnectAuthority {
             server_id: server_id.into(),
             credential_id: credential_id.into(),
             target_host: "10.0.0.1".into(),
@@ -803,12 +868,6 @@ mod tests {
             principal: binding.principal.clone(),
             epoch: binding.epoch,
             ssh_generation: gen,
-            lease: VaultCredentialLease {
-                credential_id: credential_id.into(),
-                fingerprint: "SHA256:test".into(),
-                pem: Zeroizing::new("-----BEGIN SECRET 8B2-----\n".into()),
-                passphrase: Some(Zeroizing::new("secret-pass".into())),
-            },
         }
     }
 
@@ -852,8 +911,8 @@ mod tests {
     ) -> LocalSshSessionId {
         let req = open_req(server_id, credential_id);
         let ticket = m.begin_establishment(&req).unwrap();
-        let prepared = fixture_prepared(binding, server_id, credential_id, gen);
-        m.complete_established(ticket, prepared, close).unwrap()
+        let authority = fixture_authority(binding, server_id, credential_id, gen);
+        m.complete_established(ticket, authority, close).unwrap()
     }
 
     #[test]
@@ -937,9 +996,9 @@ mod tests {
         );
         let req2 = open_req("s2", "c2");
         let ticket2 = m.begin_establishment(&req2).unwrap();
-        let prepared2 = fixture_prepared(&binding, "s2", "c2", gen);
+        let authority2 = fixture_authority(&binding, "s2", "c2", gen);
         let err = m
-            .complete_established(ticket2, prepared2, CountingClose::new(c2.clone()))
+            .complete_established(ticket2, authority2, CountingClose::new(c2.clone()))
             .unwrap_err();
         assert_eq!(err, LocalSshError::Internal);
         assert_eq!(c2.load(AtomicOrdering::SeqCst), 1);
@@ -957,10 +1016,10 @@ mod tests {
         let (m, _) = mgr_with(auth, vault.clone(), cutoff, distinct_rng_bytes(2));
         let ticket = m.begin_establishment(&open_req("s", "c")).unwrap();
         m.close_all_sessions();
-        let prepared = fixture_prepared(&binding, "s", "c", gen);
+        let authority = fixture_authority(&binding, "s", "c", gen);
         let count = Arc::new(AtomicUsize::new(0));
         let err = m
-            .complete_established(ticket, prepared, CountingClose::new(count.clone()))
+            .complete_established(ticket, authority, CountingClose::new(count.clone()))
             .unwrap_err();
         assert_eq!(err, LocalSshError::SshCutoff);
         assert_eq!(count.load(AtomicOrdering::SeqCst), 1);
@@ -976,10 +1035,10 @@ mod tests {
         let (m, _) = mgr_with(auth, vault.clone(), cutoff, distinct_rng_bytes(2));
         let ticket = m.begin_establishment(&open_req("s", "cred-x")).unwrap();
         m.close_sessions_for_credential(&binding.principal, "cred-x");
-        let prepared = fixture_prepared(&binding, "s", "cred-x", gen);
+        let authority = fixture_authority(&binding, "s", "cred-x", gen);
         let count = Arc::new(AtomicUsize::new(0));
         let err = m
-            .complete_established(ticket, prepared, CountingClose::new(count.clone()))
+            .complete_established(ticket, authority, CountingClose::new(count.clone()))
             .unwrap_err();
         assert_eq!(err, LocalSshError::SshCutoff);
         assert_eq!(count.load(AtomicOrdering::SeqCst), 1);
@@ -1001,11 +1060,11 @@ mod tests {
             subject: "sub-B".into(),
         };
         m.close_sessions_for_credential(&other, "cred-A");
-        let prepared = fixture_prepared(&binding, "s", "cred-A", gen);
+        let authority = fixture_authority(&binding, "s", "cred-A", gen);
         let id = m
             .complete_established(
                 ticket,
-                prepared,
+                authority,
                 CountingClose::new(Arc::new(AtomicUsize::new(0))),
             )
             .unwrap();
@@ -1044,13 +1103,13 @@ mod tests {
         let (m, _) = mgr_with(auth.clone(), vault.clone(), cutoff, distinct_rng_bytes(1));
         let count = Arc::new(AtomicUsize::new(0));
         let ticket = m.begin_establishment(&open_req("s", "c")).unwrap();
-        let prepared = fixture_prepared(&binding, "s", "c", gen);
+        let authority = fixture_authority(&binding, "s", "c", gen);
         let auth_hook = auth.clone();
         m.test_set_post_insert_hook(move || {
             let _ = auth_hook.clear_native();
         });
         let err = m
-            .complete_established(ticket, prepared, CountingClose::new(count.clone()))
+            .complete_established(ticket, authority, CountingClose::new(count.clone()))
             .unwrap_err();
         assert_eq!(err, LocalSshError::Unauthenticated);
         assert_eq!(count.load(AtomicOrdering::SeqCst), 1);
@@ -1067,13 +1126,13 @@ mod tests {
         let (m, _) = mgr_with(auth, vault.clone(), cutoff, distinct_rng_bytes(1));
         let count = Arc::new(AtomicUsize::new(0));
         let ticket = m.begin_establishment(&open_req("s", "c")).unwrap();
-        let prepared = fixture_prepared(&binding, "s", "c", gen);
+        let authority = fixture_authority(&binding, "s", "c", gen);
         let m_hook = m.clone();
         m.test_set_post_insert_hook(move || {
             m_hook.close_all_sessions();
         });
         let err = m
-            .complete_established(ticket, prepared, CountingClose::new(count.clone()))
+            .complete_established(ticket, authority, CountingClose::new(count.clone()))
             .unwrap_err();
         assert!(matches!(
             err,
@@ -1094,14 +1153,14 @@ mod tests {
         let (m, _) = mgr_with(auth, vault.clone(), cutoff, distinct_rng_bytes(1));
         let count = Arc::new(AtomicUsize::new(0));
         let ticket = m.begin_establishment(&open_req("s", "cred-x")).unwrap();
-        let prepared = fixture_prepared(&binding, "s", "cred-x", gen);
+        let authority = fixture_authority(&binding, "s", "cred-x", gen);
         let m_hook = m.clone();
         let principal = binding.principal.clone();
         m.test_set_post_insert_hook(move || {
             m_hook.close_sessions_for_credential(&principal, "cred-x");
         });
         let err = m
-            .complete_established(ticket, prepared, CountingClose::new(count.clone()))
+            .complete_established(ticket, authority, CountingClose::new(count.clone()))
             .unwrap_err();
         assert!(matches!(
             err,
@@ -1120,11 +1179,11 @@ mod tests {
         let gen = cutoff.ssh_generation();
         let (m, _) = mgr_with(auth.clone(), vault.clone(), cutoff, distinct_rng_bytes(1));
         let ticket = m.begin_establishment(&open_req("s", "c")).unwrap();
-        let prepared = fixture_prepared(&binding, "s", "c", gen);
+        let authority = fixture_authority(&binding, "s", "c", gen);
         let _ = auth.clear_native();
         let count = Arc::new(AtomicUsize::new(0));
         let err = m
-            .complete_established(ticket, prepared, CountingClose::new(count.clone()))
+            .complete_established(ticket, authority, CountingClose::new(count.clone()))
             .unwrap_err();
         assert_eq!(err, LocalSshError::Unauthenticated);
         assert_eq!(count.load(AtomicOrdering::SeqCst), 1);
@@ -1330,20 +1389,19 @@ mod tests {
         let ticket = m
             .begin_establishment(&open_req("srv-secret", "cred-secret"))
             .unwrap();
-        let prepared = fixture_prepared(&bind, "srv-secret", "cred-secret", gen);
+        let authority = fixture_authority(&bind, "srv-secret", "cred-secret", gen);
         let dbg_t = format!("{ticket:?}");
+        let dbg_a = format!("{authority:?}");
         let id = m
             .complete_established(
                 ticket,
-                prepared,
+                authority,
                 CountingClose::new(Arc::new(AtomicUsize::new(0))),
             )
             .unwrap();
         let dbg_m = format!("{m:?}");
         let dbg_id = format!("{id:?}");
-        for s in [&dbg_t, &dbg_m, &dbg_id] {
-            assert!(!s.contains("SECRET 8B2"));
-            assert!(!s.contains("secret-pass"));
+        for s in [&dbg_t, &dbg_a, &dbg_m, &dbg_id] {
             assert!(!s.contains("tenant-secret"));
             assert!(!s.contains("sub-secret"));
             assert!(!s.contains("srv-secret"));
@@ -1428,7 +1486,7 @@ mod tests {
         let gen = cutoff.ssh_generation();
         let (m, _) = mgr_with(auth, vault.clone(), cutoff, distinct_rng_bytes(1));
         let ticket = m.begin_establishment(&open_req("s1", "c1")).unwrap();
-        let other = fixture_prepared(&binding, "s-OTHER", "c1", gen);
+        let other = fixture_authority(&binding, "s-OTHER", "c1", gen);
         let count = Arc::new(AtomicUsize::new(0));
         let err = m
             .complete_established(ticket, other, CountingClose::new(count.clone()))
@@ -1446,11 +1504,11 @@ mod tests {
         let gen = cutoff.ssh_generation();
         let (m, rng) = mgr_with(auth, vault.clone(), cutoff, distinct_rng_bytes(1));
         let ticket = m.begin_establishment(&open_req("s", "c")).unwrap();
-        let prepared = fixture_prepared(&binding, "s", "c", gen);
+        let authority = fixture_authority(&binding, "s", "c", gen);
         rng.fail_next();
         let count = Arc::new(AtomicUsize::new(0));
         let err = m
-            .complete_established(ticket, prepared, CountingClose::new(count.clone()))
+            .complete_established(ticket, authority, CountingClose::new(count.clone()))
             .unwrap_err();
         assert_eq!(err, LocalSshError::Internal);
         assert_eq!(count.load(AtomicOrdering::SeqCst), 1);

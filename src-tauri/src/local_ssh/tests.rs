@@ -955,6 +955,12 @@ fn public_error_codes_are_fixed_and_secret_free() {
         LocalSshError::MetadataMismatch,
         LocalSshError::InvalidMetadata,
         LocalSshError::CredentialNotFound,
+        LocalSshError::HostKeyMismatch,
+        LocalSshError::HostKeyRejectedByUser,
+        LocalSshError::CloudHostKeyWriteFailed,
+        LocalSshError::LocalKnownHostsFailed,
+        LocalSshError::AuthenticationFailed,
+        LocalSshError::ConnectFailed,
         LocalSshError::Internal,
     ] {
         let s = map_local_ssh_public(e);

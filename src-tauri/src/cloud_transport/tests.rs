@@ -104,6 +104,68 @@ fn reject_native_only_invocation_gate() {
     assert_eq!(require_ipc_invocation(Invocation::IpcViaRust), Ok(()));
 }
 
+#[tokio::test]
+async fn servers_host_key_ipc_rejected_no_outbound() {
+    let backend = MockHttpBackend::new("{}");
+    let t = transport(backend.clone());
+    let err = t
+        .invoke_ipc(
+            "servers.host_key",
+            &json!({
+                "id": "srv-1",
+                "host_key_type": "ssh-ed25519",
+                "fingerprint": "SHA256:abc",
+                "expected_fingerprint": null
+            }),
+            Some("tok"),
+            Some(1),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(err, TransportError::NativeOnly);
+    assert_no_outbound(&backend);
+}
+
+#[tokio::test]
+async fn servers_host_key_native_invoke_succeeds_with_wire_body() {
+    let backend = MockHttpBackend::new(r#"{"ok":true}"#);
+    let t = transport(backend.clone());
+    let out = t
+        .invoke_native(
+            "servers.host_key",
+            &json!({
+                "id": "srv-1",
+                "host_key_type": "ssh-ed25519",
+                "fingerprint": "SHA256:abc",
+                "expected_fingerprint": null
+            }),
+            Some("tok"),
+            Some(1),
+        )
+        .await
+        .expect("native host-key");
+    assert_eq!(out, json!({"ok": true}));
+    let req = backend.last_request().expect("outbound");
+    assert!(req.url.ends_with("/api/servers/srv-1/host-key"));
+    let body = req.body.as_ref().expect("body");
+    assert!(body.contains("\"fingerprint\""));
+    assert!(body.contains("\"host_key_type\""));
+    assert!(!body.contains("host_key_fingerprint"));
+    assert!(body.contains("expected_fingerprint"));
+}
+
+#[tokio::test]
+async fn servers_get_native_invoke_rejected_as_invalid_invocation() {
+    let backend = MockHttpBackend::new("{}");
+    let t = transport(backend.clone());
+    let err = t
+        .invoke_native("servers.get", &json!({"id": "s1"}), Some("tok"), Some(1))
+        .await
+        .unwrap_err();
+    assert_eq!(err, TransportError::InvalidInvocation);
+    assert_no_outbound(&backend);
+}
+
 // ─── Forbidden transport-control fields from caller ──────────────────────────
 
 #[tokio::test]

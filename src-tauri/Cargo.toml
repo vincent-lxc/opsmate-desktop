@@ -42,7 +42,7 @@ zeroize = { version = "=1.9.0", default-features = false, features = ["alloc"] }
 reqwest = { version = "=0.12.15", default-features = false, features = ["rustls-tls", "json"] }
 # rt + time: production pending-PKCE async timer (shared runtime; no OS thread per login)
 # sync: watch channel for durable cancellation generation (cloud_transport 6B1)
-tokio = { version = "=1.44.2", features = ["rt-multi-thread", "macros", "time", "sync"] }
+tokio = { version = "=1.44.2", features = ["rt-multi-thread", "macros", "time", "sync", "net"] }
 thiserror = "=1.0.69"
 
 # macOS native secure input (NSSecureTextField) — library only; no WebView surface.

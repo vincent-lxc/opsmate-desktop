@@ -2,7 +2,8 @@
 //!
 //! WebView/business IPC may only supply operation id + JSON business fields.
 //! Method, origin, URL, headers, Authorization, and Content-Type are Rust-owned.
-//! Sole business entry: `CloudTransport::invoke_ipc` (async; Available + IpcViaRust).
+//! Business IPC entry: `CloudTransport::invoke_ipc` (Available + IpcViaRust).
+//! Native-only entry: `CloudTransport::invoke_native` (Available + NativeOnly).
 //!
 //! Production path moves `BuiltRequest` into the backend (no bearer/body Clone).
 
@@ -114,6 +115,46 @@ impl<B: HttpBackend, H: SessionLifecycleHooks> CloudTransport<B, H> {
         bearer: Option<&str>,
         auth_epoch: Option<u64>,
     ) -> Result<Value, TransportError> {
+        self.invoke_gated(
+            operation_id,
+            business_input,
+            bearer,
+            auth_epoch,
+            InvocationGate::IpcViaRust,
+        )
+        .await
+    }
+
+    /// Execute a **Rust-only** native operation (async).
+    ///
+    /// Same fixed-origin build, auth-epoch cancel, 401 lifecycle, and response
+    /// bounds as [`invoke_ipc`], but requires `Invocation::NativeOnly` and is
+    /// **not** reachable from WebView `cloud_call` / `invoke_ipc`.
+    pub async fn invoke_native(
+        &self,
+        operation_id: &str,
+        business_input: &Value,
+        bearer: Option<&str>,
+        auth_epoch: Option<u64>,
+    ) -> Result<Value, TransportError> {
+        self.invoke_gated(
+            operation_id,
+            business_input,
+            bearer,
+            auth_epoch,
+            InvocationGate::NativeOnly,
+        )
+        .await
+    }
+
+    async fn invoke_gated(
+        &self,
+        operation_id: &str,
+        business_input: &Value,
+        bearer: Option<&str>,
+        auth_epoch: Option<u64>,
+        gate: InvocationGate,
+    ) -> Result<Value, TransportError> {
         let wait = self.control.waiter_token(auth_epoch);
         if self.control.is_cancelled_token(&wait) {
             return Err(Self::map_cancel_error(&self.control, &wait, auth_epoch));
@@ -127,12 +168,19 @@ impl<B: HttpBackend, H: SessionLifecycleHooks> CloudTransport<B, H> {
             return Err(TransportError::NotAvailable);
         }
 
-        require_ipc_invocation(s.invocation)?;
-        if !is_ipc_callable(op) {
-            return Err(match s.invocation {
-                Invocation::NativeOnly => TransportError::NativeOnly,
-                Invocation::IpcViaRust => TransportError::InvalidInvocation,
-            });
+        match gate {
+            InvocationGate::IpcViaRust => {
+                require_ipc_invocation(s.invocation)?;
+                if !is_ipc_callable(op) {
+                    return Err(match s.invocation {
+                        Invocation::NativeOnly => TransportError::NativeOnly,
+                        Invocation::IpcViaRust => TransportError::InvalidInvocation,
+                    });
+                }
+            }
+            InvocationGate::NativeOnly => {
+                require_native_invocation(s.invocation)?;
+            }
         }
 
         let built = build_request(&s, business_input, bearer)?;
@@ -373,6 +421,19 @@ pub fn require_ipc_invocation(invocation: Invocation) -> Result<(), TransportErr
         Invocation::IpcViaRust => Ok(()),
         Invocation::NativeOnly => Err(TransportError::NativeOnly),
     }
+}
+
+/// Fail-closed invocation gate for Rust-only native operations.
+pub fn require_native_invocation(invocation: Invocation) -> Result<(), TransportError> {
+    match invocation {
+        Invocation::NativeOnly => Ok(()),
+        Invocation::IpcViaRust => Err(TransportError::InvalidInvocation),
+    }
+}
+
+enum InvocationGate {
+    IpcViaRust,
+    NativeOnly,
 }
 
 fn validate_native_bearer(

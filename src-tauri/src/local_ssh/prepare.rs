@@ -28,7 +28,7 @@ pub struct LocalSshOpenRequest {
 
 // ─── Fixed errors (never raw HTTP/body/secret text) ──────────────────────────
 
-/// Closed error set for local SSH preparation. Display is fixed public codes only.
+/// Closed error set for local SSH prepare / connect. Display is fixed public codes only.
 #[derive(Debug, Error, Clone, Copy, PartialEq, Eq)]
 pub enum LocalSshError {
     /// Request DTO / id validation failed.
@@ -58,6 +58,24 @@ pub enum LocalSshError {
     /// Local vault has no matching credential for this principal.
     #[error("local_ssh_credential_not_found")]
     CredentialNotFound,
+    /// Pinned host key type or fingerprint mismatch.
+    #[error("local_ssh_host_key_mismatch")]
+    HostKeyMismatch,
+    /// User rejected native TOFU confirmation.
+    #[error("local_ssh_host_key_rejected")]
+    HostKeyRejectedByUser,
+    /// Cloud host-key CAS pin failed.
+    #[error("local_ssh_cloud_host_key_failed")]
+    CloudHostKeyWriteFailed,
+    /// Local known-hosts write failed.
+    #[error("local_ssh_local_known_hosts_failed")]
+    LocalKnownHostsFailed,
+    /// SSH public-key authentication rejected (no secret detail).
+    #[error("local_ssh_authentication_failed")]
+    AuthenticationFailed,
+    /// TCP/KEX/connect failed or overall handshake timeout (no host/user/secret).
+    #[error("local_ssh_connect_failed")]
+    ConnectFailed,
     /// Unexpected internal failure (no secret payload).
     #[error("local_ssh_internal")]
     Internal,
@@ -75,6 +93,12 @@ pub fn map_local_ssh_public(err: LocalSshError) -> &'static str {
         LocalSshError::MetadataMismatch => "local_ssh_metadata_mismatch",
         LocalSshError::InvalidMetadata => "local_ssh_invalid_metadata",
         LocalSshError::CredentialNotFound => "local_ssh_credential_not_found",
+        LocalSshError::HostKeyMismatch => "local_ssh_host_key_mismatch",
+        LocalSshError::HostKeyRejectedByUser => "local_ssh_host_key_rejected",
+        LocalSshError::CloudHostKeyWriteFailed => "local_ssh_cloud_host_key_failed",
+        LocalSshError::LocalKnownHostsFailed => "local_ssh_local_known_hosts_failed",
+        LocalSshError::AuthenticationFailed => "local_ssh_authentication_failed",
+        LocalSshError::ConnectFailed => "local_ssh_connect_failed",
         LocalSshError::Internal => "local_ssh_internal",
     }
 }
@@ -91,6 +115,8 @@ pub struct PreparedHostKey {
 /// Successful local SSH preparation — **not** Serialize, **not** Clone.
 /// Holds target metadata, binding snapshot, SSH generation, and vault lease.
 /// Debug is manually redacted: never dumps PEM, passphrase, tenant, subject, bearer.
+///
+/// Consume via [`split_prepared_for_connect`] before handshake / `complete_established`.
 pub struct PreparedLocalSshOpen {
     pub server_id: String,
     pub credential_id: String,
@@ -120,6 +146,71 @@ impl std::fmt::Debug for PreparedLocalSshOpen {
             .field("lease", &"<redacted>")
             .finish()
     }
+}
+
+/// Secret-free immutable authority snapshot for connect + `complete_established`.
+/// **Not** Clone, **not** Serialize. Never holds PEM/passphrase/bearer.
+/// Handshake retains the single instance for `complete_established`; the handler
+/// builds a separate minimal policy snapshot from borrowed fields.
+pub struct LocalSshConnectAuthority {
+    pub server_id: String,
+    pub credential_id: String,
+    pub target_host: String,
+    pub ssh_port: u16,
+    pub ssh_user: String,
+    pub host_key: Option<PreparedHostKey>,
+    pub principal: NativePrincipal,
+    pub epoch: u64,
+    pub ssh_generation: u64,
+}
+
+impl std::fmt::Debug for LocalSshConnectAuthority {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LocalSshConnectAuthority")
+            .field("server_id", &"<redacted>")
+            .field("credential_id", &"<redacted>")
+            .field("target_host", &"<redacted>")
+            .field("ssh_port", &self.ssh_port)
+            .field("ssh_user", &"<redacted>")
+            .field("host_key", &self.host_key.as_ref().map(|_| "<present>"))
+            .field("principal", &"<redacted>")
+            .field("epoch", &"<redacted>")
+            .field("ssh_generation", &self.ssh_generation)
+            .finish()
+    }
+}
+
+/// Consume lease-bearing prepared open into secret-free authority + exactly one lease.
+/// Call once at the connector boundary; never store PEM long-lived after decode.
+pub fn split_prepared_for_connect(
+    prepared: PreparedLocalSshOpen,
+) -> (LocalSshConnectAuthority, VaultCredentialLease) {
+    let PreparedLocalSshOpen {
+        server_id,
+        credential_id,
+        target_host,
+        ssh_port,
+        ssh_user,
+        host_key,
+        principal,
+        epoch,
+        ssh_generation,
+        lease,
+    } = prepared;
+    (
+        LocalSshConnectAuthority {
+            server_id,
+            credential_id,
+            target_host,
+            ssh_port,
+            ssh_user,
+            host_key,
+            principal,
+            epoch,
+            ssh_generation,
+        },
+        lease,
+    )
 }
 
 // ─── Bounds ──────────────────────────────────────────────────────────────────

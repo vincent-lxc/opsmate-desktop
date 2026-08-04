@@ -284,6 +284,40 @@ impl<B: HttpBackend> CloudBridge<B> {
             .await
     }
 
+    /// Rust-only native cloud call (e.g. `servers.host_key` CAS).
+    ///
+    /// Same auth snapshot / epoch cancel / 401 lifecycle as [`call`], but only
+    /// for `Invocation::NativeOnly` operations. WebView `cloud_call` must never
+    /// reach this path.
+    pub async fn call_native(
+        &self,
+        operation_id: &str,
+        business_input: &Value,
+    ) -> Result<Value, TransportError> {
+        use crate::cloud_transport::{from_id, spec, Invocation};
+
+        let op = from_id(operation_id).ok_or(TransportError::UnknownOperation)?;
+        let s = spec(op);
+        if !matches!(s.invocation, Invocation::NativeOnly) {
+            return Err(TransportError::InvalidInvocation);
+        }
+
+        let (bearer_owned, epoch) = if s.authenticated {
+            let snap = self
+                .auth
+                .native_auth_snapshot()
+                .ok_or(TransportError::Unauthenticated)?;
+            (Some(snap.bearer), Some(snap.epoch))
+        } else {
+            (None, None)
+        };
+
+        let bearer_ref = bearer_owned.as_ref().map(|b| b.as_str());
+        self.transport
+            .invoke_native(operation_id, business_input, bearer_ref, epoch)
+            .await
+    }
+
     /// After successful native login: cancel prior-epoch cloud work, advance SSH,
     /// seal **real** Stronghold as principal_changed. Does **not** use global cancel.
     pub fn on_successful_session_install(&self) {

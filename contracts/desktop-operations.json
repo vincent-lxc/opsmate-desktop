@@ -84,6 +84,27 @@
       "invocation": "ipc_via_rust"
     },
     {
+      "id": "servers.host_key",
+      "method": "POST",
+      "path": "/api/servers/{id}/host-key",
+      "authenticated": true,
+      "availability": "available",
+      "pathParams": [
+        "id"
+      ],
+      "queryFields": [],
+      "bodyFields": [
+        "expected_fingerprint",
+        "host_key_type",
+        "fingerprint"
+      ],
+      "optionalBodyFields": [
+        "expected_fingerprint"
+      ],
+      "fixedBodyFields": {},
+      "invocation": "native_only"
+    },
+    {
       "id": "monitoring.foundation.list",
       "method": "GET",
       "path": "/api/monitoring/foundation",
