@@ -12,6 +12,8 @@
 pub mod auth;
 pub mod cloud_bridge;
 pub mod cloud_transport;
+/// Local SSH preparation boundary (8B1) — crate-internal only; no IPC registration.
+pub(crate) mod local_ssh;
 pub mod secure_prompt;
 pub mod security_cutoff;
 /// Stronghold vault core + runtime (no Stronghold plugin registration).

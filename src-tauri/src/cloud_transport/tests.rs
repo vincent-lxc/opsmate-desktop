@@ -348,6 +348,47 @@ async fn success_servers_get_builds_origin_url_and_sanitizes() {
 }
 
 #[tokio::test]
+async fn duplicate_json_object_keys_map_to_invalid_response() {
+    // Last-wins would silently keep the second id; transport must fail closed.
+    let backend = MockHttpBackend::new(r#"{"id":"srv-A","id":"srv-1","name":"db","token":"LEAK"}"#);
+    let t = transport(backend.clone());
+    let err = t
+        .invoke_ipc(
+            "servers.get",
+            &json!({"id": "srv-1"}),
+            Some("native-bearer-token"),
+            Some(1),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(err, TransportError::InvalidResponse);
+    assert_eq!(map_transport_public(err), "invalid_response");
+    assert_eq!(backend.request_count(), 1);
+}
+
+#[tokio::test]
+async fn trailing_json_after_valid_body_maps_to_invalid_response() {
+    for body in [
+        r#"{"ok":true}{"extra":1}"#,
+        r#"{"ok":true}1"#,
+        r#"{"ok":true} not-json"#,
+    ] {
+        let backend = MockHttpBackend::new(body);
+        let t = transport(backend.clone());
+        let err = t
+            .invoke_ipc("auth.me", &empty_obj(), Some("tok"), Some(1))
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err,
+            TransportError::InvalidResponse,
+            "body={body:?} must not accept trailing tokens"
+        );
+        assert_eq!(map_transport_public(err), "invalid_response");
+    }
+}
+
+#[tokio::test]
 async fn success_query_deterministic_encoding_and_allowlist() {
     let backend = MockHttpBackend::new(r#"{"items":[]}"#);
     let t = transport(backend.clone());
