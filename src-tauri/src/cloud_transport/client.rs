@@ -1,10 +1,13 @@
-//! Constrained native cloud transport client (reject-before-transport core).
+//! Constrained native cloud transport client.
 //!
 //! WebView/business IPC may only supply operation id + JSON business fields.
 //! Method, origin, URL, headers, Authorization, and Content-Type are Rust-owned.
-//! Sole business entry: `invoke_ipc` (always enforces IpcViaRust + Available).
+//! Sole business entry: `CloudTransport::invoke_ipc` (async; Available + IpcViaRust).
+//!
+//! Production path moves `BuiltRequest` into the backend (no bearer/body Clone).
 
 use super::error::TransportError;
+use super::lifecycle::{InvalidationControl, SessionLifecycleHooks};
 use super::operations::{
     from_id, is_callable, is_ipc_callable, spec, Availability, Invocation, Method, OperationSpec,
     BASE_ORIGIN,
@@ -13,10 +16,12 @@ use super::sanitize::sanitize_response_json;
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
 use std::fmt;
+use std::future::Future;
+use std::sync::Arc;
 
 /// Fully built request — never constructed from caller-controlled URL/method/headers.
 /// Debug redacts Authorization values and body (may hold passwords).
-/// Clone is test-only (mock recording); production avoids cloning secret-bearing requests.
+/// Clone is test-only (mock recording); production moves the request into the backend.
 #[cfg_attr(test, derive(Clone))]
 pub struct BuiltRequest {
     pub method: Method,
@@ -43,81 +48,262 @@ impl fmt::Debug for BuiltRequest {
             .field("method", &self.method)
             .field("url", &self.url)
             .field("headers", &headers)
-            .field(
-                "body",
-                &self.body.as_ref().map(|_| "<redacted>"),
-            )
+            .field("body", &self.body.as_ref().map(|_| "<redacted>"))
             .finish()
     }
 }
 
-/// Injectable HTTP backend boundary (sync; no new async-trait dependency).
-/// Task 6B will provide the production reqwest implementation.
-pub trait HttpBackend: Send + Sync {
-    fn execute(&self, request: &BuiltRequest) -> Result<String, TransportError>;
+/// Structured backend response (status + raw body bytes). Never logged.
+#[derive(Debug)]
+pub struct BackendResponse {
+    pub status: u16,
+    pub body: Vec<u8>,
 }
 
-/// Test double that records call count and last request (test builds only).
+/// Injectable async HTTP backend (RPITIT; no async-trait dependency).
+/// Production takes ownership of `BuiltRequest` (no secret Clone).
+pub trait HttpBackend: Send + Sync {
+    fn execute(
+        &self,
+        request: BuiltRequest,
+    ) -> impl Future<Output = Result<BackendResponse, TransportError>> + Send;
+}
+
+/// Async cloud transport: planner + backend + cancellation + 401 lifecycle.
+///
+/// Production requires explicit `SessionLifecycleHooks` — no silent no-op default
+/// that would drop 401 security cleanup on the floor.
+pub struct CloudTransport<B, H> {
+    backend: B,
+    hooks: H,
+    control: Arc<InvalidationControl>,
+}
+
+impl<B: HttpBackend, H: SessionLifecycleHooks> CloudTransport<B, H> {
+    pub fn new(backend: B, hooks: H) -> Self {
+        Self {
+            backend,
+            hooks,
+            control: Arc::new(InvalidationControl::new()),
+        }
+    }
+
+    pub fn control(&self) -> &InvalidationControl {
+        &self.control
+    }
+
+    pub fn begin_session_epoch(&self) {
+        self.control.begin_session_epoch();
+    }
+
+    pub fn cancel_inflight(&self) {
+        self.control.cancel_inflight();
+    }
+
+    /// Execute a WebView/business IPC operation (async).
+    ///
+    /// Reject paths never call the backend. In-flight work races cancellation.
+    /// 401 runs ordered lifecycle once per session epoch and returns
+    /// `SessionInvalidated`.
+    pub async fn invoke_ipc(
+        &self,
+        operation_id: &str,
+        business_input: &Value,
+        bearer: Option<&str>,
+    ) -> Result<Value, TransportError> {
+        let start_gen = self.control.cancel_generation();
+        if self.control.is_cancelled(start_gen) {
+            // Should not happen for fresh gen, but fail closed.
+            return Err(TransportError::Cancelled);
+        }
+
+        let op = from_id(operation_id).ok_or(TransportError::UnknownOperation)?;
+        let s = spec(op);
+
+        require_available(s.availability)?;
+        if !is_callable(op) {
+            return Err(TransportError::NotAvailable);
+        }
+
+        require_ipc_invocation(s.invocation)?;
+        if !is_ipc_callable(op) {
+            return Err(match s.invocation {
+                Invocation::NativeOnly => TransportError::NativeOnly,
+                Invocation::IpcViaRust => TransportError::InvalidInvocation,
+            });
+        }
+
+        let built = build_request(&s, business_input, bearer)?;
+
+        // Queued after invalidation: fail closed before outbound.
+        if self.control.is_cancelled(start_gen) {
+            return Err(TransportError::Cancelled);
+        }
+
+        let result = tokio::select! {
+            biased;
+            _ = self.control.cancelled(start_gen) => {
+                Err(TransportError::Cancelled)
+            }
+            res = self.backend.execute(built) => res,
+        };
+
+        let response = match result {
+            Ok(r) => r,
+            Err(TransportError::Cancelled) => return Err(TransportError::Cancelled),
+            Err(e) => return Err(e),
+        };
+
+        // If cancelled while completing, still fail closed (no sanitize of late body).
+        if self.control.is_cancelled(start_gen) {
+            return Err(TransportError::Cancelled);
+        }
+
+        self.handle_backend_response(response)
+    }
+
+    fn handle_backend_response(&self, response: BackendResponse) -> Result<Value, TransportError> {
+        if response.status == 401 {
+            self.control.run_401_lifecycle_once(&self.hooks);
+            return Err(TransportError::SessionInvalidated);
+        }
+        if !(200..300).contains(&response.status) {
+            return Err(TransportError::HttpStatus);
+        }
+        let raw =
+            std::str::from_utf8(&response.body).map_err(|_| TransportError::InvalidResponse)?;
+        let sanitized = sanitize_response_json(raw).map_err(|_| TransportError::InvalidResponse)?;
+        Ok(sanitized)
+    }
+}
+
+/// Test-only convenience: no-op lifecycle hooks (never for production 401 path).
 #[cfg(test)]
-#[derive(Debug)]
-pub struct MockHttpBackend {
-    request_count: std::sync::atomic::AtomicUsize,
+impl<B: HttpBackend> CloudTransport<B, super::lifecycle::NoopLifecycleHooks> {
+    pub fn with_backend(backend: B) -> Self {
+        Self::new(backend, super::lifecycle::NoopLifecycleHooks)
+    }
+}
+
+// ─── Test mock backend ───────────────────────────────────────────────────────
+
+/// Shared counters/state for async mock (Arc so futures can complete independently).
+#[cfg(test)]
+#[derive(Debug, Default)]
+struct MockState {
+    request_started: std::sync::atomic::AtomicUsize,
+    request_completed: std::sync::atomic::AtomicUsize,
     last_request: std::sync::Mutex<Option<BuiltRequest>>,
-    response_body: std::sync::Mutex<String>,
-    fail: std::sync::Mutex<bool>,
+    response_body: std::sync::Mutex<Vec<u8>>,
+    status: std::sync::atomic::AtomicU16,
+    hang: std::sync::atomic::AtomicBool,
+    delay_ms: std::sync::atomic::AtomicU64,
+    fail: std::sync::atomic::AtomicBool,
+}
+
+/// Test double: async, optional hang/delay/status, completion counter.
+#[cfg(test)]
+#[derive(Debug, Clone)]
+pub struct MockHttpBackend {
+    state: Arc<MockState>,
 }
 
 #[cfg(test)]
 impl MockHttpBackend {
     pub fn new(response_body: impl Into<String>) -> Self {
-        Self {
-            request_count: std::sync::atomic::AtomicUsize::new(0),
-            last_request: std::sync::Mutex::new(None),
-            response_body: std::sync::Mutex::new(response_body.into()),
-            fail: std::sync::Mutex::new(false),
-        }
+        let state = Arc::new(MockState {
+            response_body: std::sync::Mutex::new(response_body.into().into_bytes()),
+            status: std::sync::atomic::AtomicU16::new(200),
+            ..MockState::default()
+        });
+        Self { state }
     }
 
     pub fn request_count(&self) -> usize {
-        self.request_count
+        self.state
+            .request_started
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Outbound completions (not incremented if cancelled while hanging).
+    pub fn completed_count(&self) -> usize {
+        self.state
+            .request_completed
             .load(std::sync::atomic::Ordering::SeqCst)
     }
 
     pub fn last_request(&self) -> Option<BuiltRequest> {
-        self.last_request
-            .lock()
-            .ok()
-            .and_then(|g| g.clone())
+        self.state.last_request.lock().ok().and_then(|g| g.clone())
     }
 
     pub fn set_response(&self, body: impl Into<String>) {
-        if let Ok(mut g) = self.response_body.lock() {
-            *g = body.into();
+        if let Ok(mut g) = self.state.response_body.lock() {
+            *g = body.into().into_bytes();
         }
     }
 
+    pub fn set_status(&self, status: u16) {
+        self.state
+            .status
+            .store(status, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    pub fn set_hang(&self, hang: bool) {
+        self.state
+            .hang
+            .store(hang, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    pub fn set_delay_ms(&self, ms: u64) {
+        self.state
+            .delay_ms
+            .store(ms, std::sync::atomic::Ordering::SeqCst);
+    }
+
     pub fn set_fail(&self, fail: bool) {
-        if let Ok(mut g) = self.fail.lock() {
-            *g = fail;
-        }
+        self.state
+            .fail
+            .store(fail, std::sync::atomic::Ordering::SeqCst);
     }
 }
 
 #[cfg(test)]
 impl HttpBackend for MockHttpBackend {
-    fn execute(&self, request: &BuiltRequest) -> Result<String, TransportError> {
-        self.request_count
+    fn execute(
+        &self,
+        request: BuiltRequest,
+    ) -> impl Future<Output = Result<BackendResponse, TransportError>> + Send {
+        let state = Arc::clone(&self.state);
+        state
+            .request_started
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        if let Ok(mut g) = self.last_request.lock() {
-            *g = Some(request.clone());
+        if let Ok(mut g) = state.last_request.lock() {
+            *g = Some(request);
         }
-        if self.fail.lock().map(|g| *g).unwrap_or(false) {
-            return Err(TransportError::Transport);
-        }
-        self.response_body
+        let status = state.status.load(std::sync::atomic::Ordering::SeqCst);
+        let hang = state.hang.load(std::sync::atomic::Ordering::SeqCst);
+        let delay_ms = state.delay_ms.load(std::sync::atomic::Ordering::SeqCst);
+        let fail = state.fail.load(std::sync::atomic::Ordering::SeqCst);
+        let body = state
+            .response_body
             .lock()
             .map(|g| g.clone())
-            .map_err(|_| TransportError::Transport)
+            .unwrap_or_default();
+        async move {
+            if hang {
+                std::future::pending::<()>().await;
+            }
+            if delay_ms > 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+            }
+            if fail {
+                return Err(TransportError::Transport);
+            }
+            state
+                .request_completed
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(BackendResponse { status, body })
+        }
     }
 }
 
@@ -156,14 +342,6 @@ pub fn require_ipc_invocation(invocation: Invocation) -> Result<(), TransportErr
     }
 }
 
-/// Validate native-owned bearer for authenticated ops.
-///
-/// Fail closed:
-/// - authenticated + missing → Unauthenticated
-/// - empty / whitespace-only after trim → Unauthenticated
-/// - surrounding whitespace (token not equal to trim) → Unauthenticated
-/// - any whitespace or control character inside token → Unauthenticated
-/// - unauthenticated ops never receive a bearer (returns None even if provided)
 fn validate_native_bearer(
     bearer: Option<&str>,
     authenticated: bool,
@@ -178,50 +356,13 @@ fn validate_native_bearer(
     if trimmed.is_empty() {
         return Err(TransportError::Unauthenticated);
     }
-    // Reject surrounding whitespace — do not silently accept padded tokens.
     if raw != trimmed {
         return Err(TransportError::Unauthenticated);
     }
-    if trimmed
-        .chars()
-        .any(|c| c.is_whitespace() || c.is_control())
-    {
+    if trimmed.chars().any(|c| c.is_whitespace() || c.is_control()) {
         return Err(TransportError::Unauthenticated);
     }
     Ok(Some(trimmed))
-}
-
-/// Execute a WebView/business IPC operation.
-///
-/// Sole public business entry: always requires known operation + Available +
-/// IpcViaRust. `business_input` keys are only allowlisted path/query/body fields.
-/// `bearer` is native-owned only (not from input).
-pub fn invoke_ipc<B: HttpBackend>(
-    backend: &B,
-    operation_id: &str,
-    business_input: &Value,
-    bearer: Option<&str>,
-) -> Result<Value, TransportError> {
-    let op = from_id(operation_id).ok_or(TransportError::UnknownOperation)?;
-    let s = spec(op);
-
-    require_available(s.availability)?;
-    if !is_callable(op) {
-        return Err(TransportError::NotAvailable);
-    }
-
-    require_ipc_invocation(s.invocation)?;
-    if !is_ipc_callable(op) {
-        return Err(match s.invocation {
-            Invocation::NativeOnly => TransportError::NativeOnly,
-            Invocation::IpcViaRust => TransportError::InvalidInvocation,
-        });
-    }
-
-    let built = build_request(&s, business_input, bearer)?;
-    let raw = backend.execute(&built)?;
-    let sanitized = sanitize_response_json(&raw).map_err(|_| TransportError::InvalidResponse)?;
-    Ok(sanitized)
 }
 
 /// Build a fully constrained request or fail before any transport call.
@@ -240,12 +381,10 @@ pub fn build_request(
         _ => return Err(TransportError::InvalidInput),
     };
 
-    // Reject forbidden transport-control / secret keys (case-insensitive).
     for key in obj.keys() {
         if is_forbidden_input_key(key) {
             return Err(TransportError::InvalidInput);
         }
-        // Fixed body fields are Rust-owned — caller cannot set/override them.
         for (fixed_key, _) in s.fixed_body_fields {
             if key == fixed_key || key.eq_ignore_ascii_case(fixed_key) {
                 return Err(TransportError::InvalidInput);
@@ -330,30 +469,17 @@ pub fn build_request(
         for (k, v) in s.fixed_body_fields {
             map.insert((*k).to_string(), Value::String((*v).to_string()));
         }
-        headers.push((
-            "Content-Type".to_string(),
-            "application/json".to_string(),
-        ));
-        Some(
-            serde_json::to_string(&Value::Object(map))
-                .map_err(|_| TransportError::InvalidInput)?,
-        )
+        headers.push(("Content-Type".to_string(), "application/json".to_string()));
+        Some(serde_json::to_string(&Value::Object(map)).map_err(|_| TransportError::InvalidInput)?)
     } else if matches!(s.method, Method::Post | Method::Put | Method::Patch) {
-        headers.push((
-            "Content-Type".to_string(),
-            "application/json".to_string(),
-        ));
+        headers.push(("Content-Type".to_string(), "application/json".to_string()));
         Some("{}".to_string())
     } else {
         None
     };
 
-    // Authorization only for authenticated specs, and only after validation.
     if let Some(token) = bearer {
-        headers.push((
-            "Authorization".to_string(),
-            format!("Bearer {token}"),
-        ));
+        headers.push(("Authorization".to_string(), format!("Bearer {token}")));
     }
 
     if !url.starts_with(BASE_ORIGIN) {

@@ -35,6 +35,18 @@ pub enum TransportError {
     /// Response was not usable JSON (no raw body attached).
     #[error("invalid_response")]
     InvalidResponse,
+    /// Non-401 non-2xx HTTP status (no status number or body text).
+    #[error("http_status")]
+    HttpStatus,
+    /// Response body exceeded the fixed size cap.
+    #[error("response_too_large")]
+    ResponseTooLarge,
+    /// In-flight or queued call aborted by cancellation / invalidation.
+    #[error("cancelled")]
+    Cancelled,
+    /// 401 security lifecycle completed (or concurrent duplicate); session invalid.
+    #[error("session_invalidated")]
+    SessionInvalidated,
 }
 
 /// Map to fixed public IPC string codes (never Display of secret-bearing data).
@@ -49,5 +61,9 @@ pub fn map_transport_public(err: TransportError) -> &'static str {
         TransportError::Unauthenticated => "unauthenticated",
         TransportError::Transport => "transport",
         TransportError::InvalidResponse => "invalid_response",
+        TransportError::HttpStatus => "http_status",
+        TransportError::ResponseTooLarge => "response_too_large",
+        TransportError::Cancelled => "cancelled",
+        TransportError::SessionInvalidated => "session_invalidated",
     }
 }

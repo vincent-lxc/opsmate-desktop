@@ -17,6 +17,8 @@
 //!   fail-closed: present in the contract catalog but not callable.
 
 #![allow(dead_code)]
+// Generated allowlist; keep rustfmt from fighting the generator (contracts:check).
+#![cfg_attr(rustfmt, rustfmt_skip)]
 
 /// HTTP method for an allowlisted operation (idiomatic PascalCase variants).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
