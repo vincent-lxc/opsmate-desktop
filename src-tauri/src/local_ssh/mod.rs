@@ -1,22 +1,25 @@
-//! Local SSH preparation boundary (Task 8B1).
+//! Local SSH preparation (8B1) + session authority registry (8B2).
 //!
-//! Rust-internal only: validates WebView-shaped request fields, fetches online
-//! server metadata via CloudBridge `servers.get`, revalidates auth + SecurityCutoff
-//! generation, and leases a local vault credential.
+//! Rust-internal only: prepare validates online metadata + vault lease; session
+//! manager owns secret-free records and close handles, wired as the vault
+//! [`SessionLifecycleSink`](crate::vault::SessionLifecycleSink).
 //!
-//! **Non-claims (honest):** no SSH socket, no russh connection, no host-key UI,
-//! no session registry, no Tauri IPC registration in this module.
-//!
-//! Production callers land in 8B2+; unit tests exercise the prepare path today.
+//! **Non-claims (honest):** no SSH socket, no russh network connection, no host-key
+//! confirmation UI, no Tauri SSH IPC/events, no terminal UI.
 
 mod prepare;
+mod session;
 
 #[cfg(test)]
 mod tests;
 
-// Crate-visible surface for later sibling integration (session registry / IPC wiring).
-#[allow(unused_imports)]
+#[allow(unused_imports)] // crate-internal surface for prepare + session IPC later
 pub use prepare::{
     map_local_ssh_public, prepare_local_ssh_open, LocalSshError, LocalSshOpenRequest,
     PreparedLocalSshOpen,
+};
+#[allow(unused_imports)]
+pub use session::{
+    attach_session_manager_to_vault, LocalSshRegistrationTicket, LocalSshSessionId,
+    LocalSshSessionManager, LocalSshSessionMeta, SessionCloseHandle,
 };

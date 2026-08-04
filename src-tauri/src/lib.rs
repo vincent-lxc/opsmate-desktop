@@ -29,6 +29,7 @@ use auth::{
 };
 use cloud_bridge::{map_cloud_public, CloudBridge, CloudCallArgs, SessionInvalidatedEmitter};
 use cloud_transport::HttpBackend;
+use local_ssh::attach_session_manager_to_vault;
 use secure_prompt::{NativeSecurePrompt, SecurePrompt};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, RunEvent, State};
@@ -264,6 +265,14 @@ pub fn run() {
                     })?;
                 let cloud = Arc::new(cloud);
                 app.manage(cloud.clone());
+
+                // 8B2: one session manager Arc — vault lifecycle sink + managed state for later IPC.
+                let ssh_sessions = attach_session_manager_to_vault(
+                    auth_store.clone(),
+                    vault.clone(),
+                    cloud.cutoff.clone(),
+                );
+                app.manage(ssh_sessions);
 
                 // Lifecycle: idle watchdog + sleep/exit coordinator (SSH cutoff before seal).
                 let lifecycle = VaultLifecycleCoordinator::new(vault, cloud.cutoff.clone());
@@ -633,6 +642,17 @@ mod tests {
         // Explicit unregister on both ExitRequested and Exit.
         assert!(prod.contains("reg.unregister()"));
         assert!(prod.matches("wd.stop()").count() >= 2);
+    }
+
+    #[test]
+    fn production_wires_local_ssh_session_manager_as_vault_sink() {
+        let lib = include_str!("lib.rs");
+        let prod = lib.split("#[cfg(test)]").next().unwrap_or(lib);
+        assert!(prod.contains("attach_session_manager_to_vault"));
+        assert!(prod.contains("app.manage(ssh_sessions)"));
+        // No broad crate-level clippy allow block.
+        assert!(!prod.contains("clippy::borrow_deref_ref"));
+        assert!(!prod.contains("clippy::large_enum_variant"));
     }
 
     #[test]

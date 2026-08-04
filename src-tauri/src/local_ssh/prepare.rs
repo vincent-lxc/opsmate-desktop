@@ -530,7 +530,7 @@ fn reject_untrusted_or_alias_keys(obj: &Map<String, Value>) -> Result<(), LocalS
         .collect();
     for key in obj.keys() {
         // Exact trusted spelling is allowed once (Map keys are unique).
-        if TRUSTED_RESPONSE_KEYS.iter().any(|t| *t == key.as_str()) {
+        if TRUSTED_RESPONSE_KEYS.contains(&key.as_str()) {
             continue;
         }
         let norm = normalize_response_key(key);
