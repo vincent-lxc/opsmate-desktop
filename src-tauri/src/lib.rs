@@ -3,7 +3,9 @@
 //! Capability boundary (foundation stage):
 //! - WebView gets `core:default` only.
 //! - No shell / opener / deep-link / stronghold plugins registered.
-//! - No business auth/vault/cloud transport yet (later tasks).
+//! - Cloud transport is allowlist-only (`cloud_transport::operations`); HTTP client later.
+
+pub mod cloud_transport;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {

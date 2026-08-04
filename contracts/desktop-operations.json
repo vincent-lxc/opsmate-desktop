@@ -1,0 +1,360 @@
+{
+  "version": 1,
+  "baseOrigin": "https://app.itops.sh",
+  "wsOrigin": "wss://app.itops.sh",
+  "desktopRedirectUri": "https://app.itops.sh/login/desktop/callback",
+  "description": "Desktop cloud_transport allowlist. Paths are templates only; origin is fixed. Authorization and fixed body values are injected only by Rust. Each operation has explicit invocation: native_only (Rust-only; not IPC-callable) or ipc_via_rust (WebView may request via named business IPC; Rust still builds HTTP and injects auth). pathParams/queryFields/bodyFields describe the HTTP wire schema, not automatic WebView inputs. For native_only ops (auth.config, auth.exchange), bodyFields such as code/codeVerifier are Rust-owned PKCE material \u2014 never supplied by React/IPC. Field names match ops-ai backend validators. Availability supports blocked_pending_tenant_isolation; patrol ops are available under RLS.",
+  "operations": [
+    {
+      "id": "auth.config",
+      "method": "GET",
+      "path": "/api/auth/logto/config",
+      "authenticated": false,
+      "availability": "available",
+      "pathParams": [],
+      "queryFields": [],
+      "bodyFields": [],
+      "fixedBodyFields": {},
+      "invocation": "native_only"
+    },
+    {
+      "id": "auth.exchange",
+      "method": "POST",
+      "path": "/api/auth/logto/exchange",
+      "authenticated": false,
+      "availability": "available",
+      "pathParams": [],
+      "queryFields": [],
+      "bodyFields": [
+        "code",
+        "codeVerifier"
+      ],
+      "fixedBodyFields": {
+        "redirectUri": "https://app.itops.sh/login/desktop/callback"
+      },
+      "invocation": "native_only"
+    },
+    {
+      "id": "auth.me",
+      "method": "GET",
+      "path": "/api/auth/me",
+      "authenticated": true,
+      "availability": "available",
+      "pathParams": [],
+      "queryFields": [],
+      "bodyFields": [],
+      "fixedBodyFields": {},
+      "invocation": "ipc_via_rust"
+    },
+    {
+      "id": "servers.list",
+      "method": "GET",
+      "path": "/api/servers",
+      "authenticated": true,
+      "availability": "available",
+      "pathParams": [],
+      "queryFields": [
+        "page",
+        "page_size",
+        "name",
+        "ip",
+        "ssh_user",
+        "description",
+        "group_name",
+        "q",
+        "sort",
+        "host_key_status"
+      ],
+      "bodyFields": [],
+      "fixedBodyFields": {},
+      "invocation": "ipc_via_rust"
+    },
+    {
+      "id": "servers.get",
+      "method": "GET",
+      "path": "/api/servers/{id}",
+      "authenticated": true,
+      "availability": "available",
+      "pathParams": [
+        "id"
+      ],
+      "queryFields": [],
+      "bodyFields": [],
+      "fixedBodyFields": {},
+      "invocation": "ipc_via_rust"
+    },
+    {
+      "id": "monitoring.foundation.list",
+      "method": "GET",
+      "path": "/api/monitoring/foundation",
+      "authenticated": true,
+      "availability": "available",
+      "pathParams": [],
+      "queryFields": [
+        "category"
+      ],
+      "bodyFields": [],
+      "fixedBodyFields": {},
+      "invocation": "ipc_via_rust"
+    },
+    {
+      "id": "monitoring.foundation.get",
+      "method": "GET",
+      "path": "/api/monitoring/foundation/{id}",
+      "authenticated": true,
+      "availability": "available",
+      "pathParams": [
+        "id"
+      ],
+      "queryFields": [],
+      "bodyFields": [],
+      "fixedBodyFields": {},
+      "invocation": "ipc_via_rust"
+    },
+    {
+      "id": "monitoring.applications.list",
+      "method": "GET",
+      "path": "/api/monitoring/applications",
+      "authenticated": true,
+      "availability": "available",
+      "pathParams": [],
+      "queryFields": [],
+      "bodyFields": [],
+      "fixedBodyFields": {},
+      "invocation": "ipc_via_rust"
+    },
+    {
+      "id": "monitoring.applications.get",
+      "method": "GET",
+      "path": "/api/monitoring/applications/{id}",
+      "authenticated": true,
+      "availability": "available",
+      "pathParams": [
+        "id"
+      ],
+      "queryFields": [],
+      "bodyFields": [],
+      "fixedBodyFields": {},
+      "invocation": "ipc_via_rust"
+    },
+    {
+      "id": "monitoring.patrolTasks.list",
+      "method": "GET",
+      "path": "/api/monitoring/patrol-tasks",
+      "authenticated": true,
+      "availability": "available",
+      "pathParams": [],
+      "queryFields": [],
+      "bodyFields": [],
+      "fixedBodyFields": {},
+      "invocation": "ipc_via_rust"
+    },
+    {
+      "id": "monitoring.patrolTasks.get",
+      "method": "GET",
+      "path": "/api/monitoring/patrol-tasks/{taskId}",
+      "authenticated": true,
+      "availability": "available",
+      "pathParams": [
+        "taskId"
+      ],
+      "queryFields": [],
+      "bodyFields": [],
+      "fixedBodyFields": {},
+      "invocation": "ipc_via_rust"
+    },
+    {
+      "id": "monitoring.patrolRecords.list",
+      "method": "GET",
+      "path": "/api/monitoring/patrol-records",
+      "authenticated": true,
+      "availability": "available",
+      "pathParams": [],
+      "queryFields": [
+        "task_id",
+        "server_group_name",
+        "server_id",
+        "verdict",
+        "limit",
+        "offset"
+      ],
+      "bodyFields": [],
+      "fixedBodyFields": {},
+      "invocation": "ipc_via_rust"
+    },
+    {
+      "id": "monitoring.patrolRecords.get",
+      "method": "GET",
+      "path": "/api/monitoring/patrol-records/{recordId}",
+      "authenticated": true,
+      "availability": "available",
+      "pathParams": [
+        "recordId"
+      ],
+      "queryFields": [],
+      "bodyFields": [],
+      "fixedBodyFields": {},
+      "invocation": "ipc_via_rust"
+    },
+    {
+      "id": "monitoring.patrolRounds.list",
+      "method": "GET",
+      "path": "/api/monitoring/patrol-rounds",
+      "authenticated": true,
+      "availability": "available",
+      "pathParams": [],
+      "queryFields": [
+        "task_id",
+        "limit"
+      ],
+      "bodyFields": [],
+      "fixedBodyFields": {},
+      "invocation": "ipc_via_rust"
+    },
+    {
+      "id": "monitoring.patrolRounds.get",
+      "method": "GET",
+      "path": "/api/monitoring/patrol-rounds/{roundId}",
+      "authenticated": true,
+      "availability": "available",
+      "pathParams": [
+        "roundId"
+      ],
+      "queryFields": [],
+      "bodyFields": [],
+      "fixedBodyFields": {},
+      "invocation": "ipc_via_rust"
+    },
+    {
+      "id": "problems.list",
+      "method": "GET",
+      "path": "/api/problems",
+      "authenticated": true,
+      "availability": "available",
+      "pathParams": [],
+      "queryFields": [
+        "server_id",
+        "server_name",
+        "server_ip",
+        "root_cause_signature",
+        "problem_state",
+        "binding_title",
+        "event_id",
+        "filter_preset",
+        "page",
+        "page_size"
+      ],
+      "bodyFields": [],
+      "fixedBodyFields": {},
+      "invocation": "ipc_via_rust"
+    },
+    {
+      "id": "problems.getConvergenceTimeline",
+      "method": "GET",
+      "path": "/api/problems/{eventId}/convergence-timeline",
+      "authenticated": true,
+      "availability": "available",
+      "pathParams": [
+        "eventId"
+      ],
+      "queryFields": [],
+      "bodyFields": [],
+      "fixedBodyFields": {},
+      "invocation": "ipc_via_rust"
+    },
+    {
+      "id": "remediation.list",
+      "method": "GET",
+      "path": "/api/oncall/remediation-queue",
+      "authenticated": true,
+      "availability": "available",
+      "pathParams": [],
+      "queryFields": [
+        "exit_status",
+        "page",
+        "page_size"
+      ],
+      "bodyFields": [],
+      "fixedBodyFields": {},
+      "invocation": "ipc_via_rust"
+    },
+    {
+      "id": "remediation.get",
+      "method": "GET",
+      "path": "/api/oncall/remediation-queue/{id}",
+      "authenticated": true,
+      "availability": "available",
+      "pathParams": [
+        "id"
+      ],
+      "queryFields": [],
+      "bodyFields": [],
+      "fixedBodyFields": {},
+      "invocation": "ipc_via_rust"
+    },
+    {
+      "id": "subscription.ai.get",
+      "method": "GET",
+      "path": "/api/subscription/ai",
+      "authenticated": true,
+      "availability": "available",
+      "pathParams": [],
+      "queryFields": [],
+      "bodyFields": [],
+      "fixedBodyFields": {},
+      "invocation": "ipc_via_rust"
+    },
+    {
+      "id": "subscription.entitlements.current",
+      "method": "GET",
+      "path": "/api/entitlements/current",
+      "authenticated": true,
+      "availability": "available",
+      "pathParams": [],
+      "queryFields": [],
+      "bodyFields": [],
+      "fixedBodyFields": {},
+      "invocation": "ipc_via_rust"
+    },
+    {
+      "id": "account.telegram.bindStart",
+      "method": "POST",
+      "path": "/api/auth/me/telegram/bind",
+      "authenticated": true,
+      "availability": "available",
+      "pathParams": [],
+      "queryFields": [],
+      "bodyFields": [],
+      "fixedBodyFields": {},
+      "invocation": "ipc_via_rust"
+    },
+    {
+      "id": "account.telegram.bindStatus",
+      "method": "GET",
+      "path": "/api/auth/me/telegram/bind/{sessionId}",
+      "authenticated": true,
+      "availability": "available",
+      "pathParams": [
+        "sessionId"
+      ],
+      "queryFields": [],
+      "bodyFields": [],
+      "fixedBodyFields": {},
+      "invocation": "ipc_via_rust"
+    },
+    {
+      "id": "account.telegram.unbind",
+      "method": "DELETE",
+      "path": "/api/auth/me/telegram",
+      "authenticated": true,
+      "availability": "available",
+      "pathParams": [],
+      "queryFields": [],
+      "bodyFields": [
+        "current_password"
+      ],
+      "fixedBodyFields": {},
+      "invocation": "ipc_via_rust"
+    }
+  ]
+}

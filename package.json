@@ -10,6 +10,8 @@
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
+    "contracts:generate": "node scripts/generate-operations.mjs",
+    "contracts:check": "node scripts/generate-operations.mjs --check",
     "tauri": "tauri",
     "dev:tauri": "tauri dev",
     "build": "tauri build"
