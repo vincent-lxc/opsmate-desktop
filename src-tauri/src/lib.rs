@@ -11,7 +11,10 @@
 pub mod auth;
 pub mod cloud_bridge;
 pub mod cloud_transport;
+pub mod secure_prompt;
 pub mod security_cutoff;
+/// Task 8A1 vault core (Stronghold library). No IPC commands registered yet (8A2).
+pub mod vault;
 
 use auth::{
     map_auth_public, perform_begin_logto_arc, perform_handle_deep_link, perform_session_status,

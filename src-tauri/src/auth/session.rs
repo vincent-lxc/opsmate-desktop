@@ -48,6 +48,24 @@ pub struct NativePrincipal {
     pub subject: String,
 }
 
+/// Native-only vault/session binding: principal + epoch from one AuthStore lock.
+/// **No bearer/token.** Not Serialize. Debug redacts identity; epoch shown only as presence.
+/// Used so vault unlock/ops fail closed on logout+relogin of the same principal.
+#[derive(Clone, PartialEq, Eq)]
+pub struct AuthBinding {
+    pub principal: NativePrincipal,
+    pub epoch: u64,
+}
+
+impl std::fmt::Debug for AuthBinding {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AuthBinding")
+            .field("principal", &"<redacted>")
+            .field("epoch", &"<redacted>")
+            .finish()
+    }
+}
+
 /// Crate-internal atomic auth view: principal + bearer + session epoch from one lock.
 /// Not Clone / Serialize. Debug redacts bearer and identity fields.
 pub struct NativeAuthSnapshot {
@@ -292,6 +310,45 @@ impl AuthStore {
             bearer: Zeroizing::new(token.to_string()),
             epoch: mem.session_epoch,
         })
+    }
+
+    /// Principal + epoch only (no bearer copy). One AuthStore lock. For vault binding.
+    pub fn auth_binding(&self) -> Option<AuthBinding> {
+        let mem = self.inner.lock().ok()?;
+        let s = mem.session.as_ref()?;
+        let principal = Self::principal_from_session(s)?;
+        // Require nonempty token so a half-formed session is not bindable.
+        if s.token.trim().is_empty() {
+            return None;
+        }
+        Some(AuthBinding {
+            principal,
+            epoch: mem.session_epoch,
+        })
+    }
+
+    /// Vault/SSH revalidation: current session must match bound principal + epoch.
+    /// Poisoned lock / missing session / epoch advance → false (fail closed).
+    /// Never accepts WebView input.
+    pub fn session_binding_current(&self, principal: &NativePrincipal, epoch: u64) -> bool {
+        let Ok(mem) = self.inner.lock() else {
+            return false;
+        };
+        if mem.session_epoch != epoch {
+            return false;
+        }
+        let Some(s) = mem.session.as_ref() else {
+            return false;
+        };
+        let Some(p) = Self::principal_from_session(s) else {
+            return false;
+        };
+        p == *principal
+    }
+
+    /// Same as [`session_binding_current`] for a captured [`AuthBinding`].
+    pub fn binding_still_current(&self, binding: &AuthBinding) -> bool {
+        self.session_binding_current(&binding.principal, binding.epoch)
     }
 
     /// Bearer for native HTTPS only — Zeroizing so drop wipes.

@@ -24,7 +24,7 @@ pub use pkce::{
     RandomSource, SecRandomSource,
 };
 pub use session::{
-    AuthBeginResponse, AuthStore, NativeAuthSnapshot, NativePrincipal, SessionStatus,
+    AuthBeginResponse, AuthBinding, AuthStore, NativeAuthSnapshot, NativePrincipal, SessionStatus,
     DEFAULT_PENDING_TIMEOUT,
 };
 

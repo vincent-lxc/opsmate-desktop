@@ -1,7 +1,8 @@
 //! Production security cutoffs for 401 / logout / session transition.
 //!
-//! **Honest non-claims:** no real SSH sessions or Stronghold vault exist yet.
-//! These are real fail-closed gates future Task 8 code must check.
+//! **Honest non-claims:** no real SSH sessions exist yet. Vault core (8A1)
+//! is a separate module — this cutoff is still a fail-closed gate, not the
+//! real Stronghold vault lock.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
