@@ -25,5 +25,12 @@
     "active": true,
     "targets": ["app"],
     "icon": ["icons/icon.png"]
+  },
+  "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": ["opsmate"]
+      }
+    }
   }
 }
