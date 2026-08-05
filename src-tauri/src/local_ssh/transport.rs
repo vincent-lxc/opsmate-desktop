@@ -13,9 +13,9 @@
 use super::connect::{HostKeyPolicyHandler, HANDSHAKE_OVERALL_TIMEOUT};
 use super::prepare::LocalSshError;
 use super::session::SessionCloseHandle;
+use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(test)]
 use std::sync::atomic::AtomicUsize;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -268,6 +268,10 @@ pub struct ActorSshTransport {
     cancel_rx: watch::Receiver<bool>,
     closed: AtomicBool,
     thread: Mutex<Option<JoinHandle<()>>>,
+    /// Test-only: count of commands successfully enqueued via `try_send`.
+    /// Not present in non-test builds (no production layout or hot-path cost).
+    #[cfg(test)]
+    cmds_submitted: AtomicUsize,
 }
 
 impl std::fmt::Debug for ActorSshTransport {
@@ -293,7 +297,10 @@ impl ActorSshTransport {
             reply: reply_tx,
         };
         match self.cmd_tx.try_send(cmd) {
-            Ok(()) => {}
+            Ok(()) => {
+                #[cfg(test)]
+                self.cmds_submitted.fetch_add(1, Ordering::SeqCst);
+            }
             Err(mpsc::error::TrySendError::Full(_)) => {
                 return Err(LocalSshError::CommandQueueFull);
             }
@@ -475,6 +482,8 @@ pub fn open_session_transport(
                 cancel_rx,
                 closed: AtomicBool::new(false),
                 thread: Mutex::new(Some(thread)),
+                #[cfg(test)]
+                cmds_submitted: AtomicUsize::new(0),
             }),
         }),
         Ok(Err(e)) => {
@@ -932,6 +941,8 @@ pub struct FakePeerHandle {
     pub fail_resize: Arc<AtomicBool>,
     /// Counts of peer-EOF-path drain replies (TransportClosed).
     pub drained_cmd_replies: Arc<AtomicUsize>,
+    /// Releases a held fake actor into its select loop (see `open_fake_transport_held`).
+    pub start_gate: Arc<tokio::sync::Notify>,
 }
 
 #[cfg(test)]
@@ -956,6 +967,24 @@ impl TerminalSink for RecordingSink {
 pub fn open_fake_transport(
     sink: Arc<dyn TerminalSink>,
 ) -> (Arc<ActorSshTransport>, FakePeerHandle) {
+    open_fake_transport_inner(sink, false)
+}
+
+/// Like [`open_fake_transport`], but the actor waits on `start_gate` before the
+/// first select iteration so tests can enqueue peer + cmd under contention
+/// before fairness is observed (deterministic, no sleep races).
+#[cfg(test)]
+pub fn open_fake_transport_held(
+    sink: Arc<dyn TerminalSink>,
+) -> (Arc<ActorSshTransport>, FakePeerHandle) {
+    open_fake_transport_inner(sink, true)
+}
+
+#[cfg(test)]
+fn open_fake_transport_inner(
+    sink: Arc<dyn TerminalSink>,
+    hold_start: bool,
+) -> (Arc<ActorSshTransport>, FakePeerHandle) {
     let (cmd_tx, mut cmd_rx) = mpsc::channel::<ActorCmd>(MAX_TRANSPORT_CMD_QUEUE);
     // Peer capacity large enough for fairness flood tests without blocking the feeder.
     let (peer_tx, mut peer_rx) = mpsc::channel::<PeerEvent>(256);
@@ -967,6 +996,7 @@ pub fn open_fake_transport(
     let fail_write = Arc::new(AtomicBool::new(false));
     let fail_resize = Arc::new(AtomicBool::new(false));
     let drained_cmd_replies = Arc::new(AtomicUsize::new(0));
+    let start_gate = Arc::new(tokio::sync::Notify::new());
 
     let completed_t = Arc::clone(&completed);
     let branch_t = Arc::clone(&branch_log);
@@ -975,6 +1005,7 @@ pub fn open_fake_transport(
     let fail_w = Arc::clone(&fail_write);
     let fail_r = Arc::clone(&fail_resize);
     let drained_t = Arc::clone(&drained_cmd_replies);
+    let start_gate_t = Arc::clone(&start_gate);
     let mut cancel_rx_t = cancel_rx.clone();
     let sink_t = Arc::clone(&sink);
 
@@ -984,6 +1015,9 @@ pub fn open_fake_transport(
             .build()
             .expect("fake actor runtime");
         rt.block_on(async move {
+            if hold_start {
+                start_gate_t.notified().await;
+            }
             let closed_once = AtomicBool::new(false);
             let mut sched = FairIoScheduler::new(FAIR_IO_MAX_BURST);
             enum Br {
@@ -1135,6 +1169,8 @@ pub fn open_fake_transport(
         cancel_rx,
         closed: AtomicBool::new(false),
         thread: Mutex::new(Some(thread)),
+        #[cfg(test)]
+        cmds_submitted: AtomicUsize::new(0),
     });
     (
         transport,
@@ -1147,6 +1183,7 @@ pub fn open_fake_transport(
             fail_write,
             fail_resize,
             drained_cmd_replies,
+            start_gate,
         },
     )
 }
@@ -1778,11 +1815,16 @@ NOw48wX/buJxrrPJMsF0AAAACXRlc3QtdXNlcgECAwQ=
 
     // ─── Review-fix: actor fairness under continuous load ───────────────────
 
-    #[test]
-    fn actor_fairness_cmd_not_starved_by_continuous_peer() {
+    /// Deterministic fairness harness: hold actor, enqueue 64 peers + 1 write,
+    /// then release so both arms are ready under `FairIoScheduler` selection.
+    ///
+    /// Live CI (run 31005287693 / job 92303595760) failed the prior racy setup
+    /// with `peers_before=64` (all peers drained before write was enqueued).
+    /// Fairness only reorders when **both** arms are ready; this harness makes
+    /// that precondition true without sleeps.
+    fn run_actor_fairness_cmd_not_starved_once() {
         let sink = Arc::new(RecordingSink::default());
-        let (t, peer) = open_fake_transport(Arc::clone(&sink) as Arc<dyn TerminalSink>);
-        // Flood peer beyond FAIR_IO_MAX_BURST while a write is outstanding.
+        let (t, peer) = open_fake_transport_held(Arc::clone(&sink) as Arc<dyn TerminalSink>);
         for i in 0..64u8 {
             peer.peer_tx
                 .try_send(PeerEvent::Data(vec![i]))
@@ -1790,21 +1832,82 @@ NOw48wX/buJxrrPJMsF0AAAACXRlc3QtdXNlcgECAwQ=
         }
         let t_w = Arc::clone(&t);
         let jh = std::thread::spawn(move || t_w.write(b"fair-cmd"));
-        // Write must ack under continuous peer pressure (fair prefer_cmd after burst).
+        // Spin until write's try_send completed (no timed sleep).
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while t.cmds_submitted.load(AO::SeqCst) == 0 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "write did not enqueue within deadline"
+            );
+            std::thread::yield_now();
+        }
+        peer.start_gate.notify_one();
         let r = jh.join().expect("join");
         assert_eq!(r, Ok(()), "write must not be starved by peer flood");
         let done = peer.completed.lock().unwrap().clone();
         assert!(done.iter().any(|s| s == "write:8"));
-        // Branch log must show cmd interleaved after peer burst (not all peers first forever).
         let log = peer.branch_log.lock().unwrap().clone();
         assert!(log.contains(&"cmd"));
         assert!(log.contains(&"peer"));
-        // After peer burst, a cmd must appear before every remaining peer is drained.
         let first_cmd = log.iter().position(|b| *b == "cmd").expect("cmd branch");
         let peers_before = log[..first_cmd].iter().filter(|b| **b == "peer").count();
         assert!(
             peers_before <= FAIR_IO_MAX_BURST as usize + 2,
             "cmd must win after peer burst, peers_before={peers_before} log={log:?}"
+        );
+        t.close().unwrap();
+    }
+
+    #[test]
+    fn actor_fairness_cmd_not_starved_by_continuous_peer() {
+        run_actor_fairness_cmd_not_starved_once();
+    }
+
+    #[test]
+    fn actor_fairness_cmd_not_starved_stress_repeat() {
+        for _ in 0..64 {
+            run_actor_fairness_cmd_not_starved_once();
+        }
+    }
+
+    /// Documents the live CI failure mode: when the write is enqueued only after
+    /// the peer flood is fully drained, `peers_before` is 64. Fairness does not
+    /// invent a cmd that was never ready; the regression above holds the actor
+    /// until both arms are ready.
+    #[test]
+    fn actor_fairness_peers_before_is_64_if_cmd_arrives_after_peer_drain() {
+        let sink = Arc::new(RecordingSink::default());
+        let (t, peer) = open_fake_transport_held(Arc::clone(&sink) as Arc<dyn TerminalSink>);
+        for i in 0..64u8 {
+            peer.peer_tx
+                .try_send(PeerEvent::Data(vec![i]))
+                .expect("peer capacity");
+        }
+        // Release with peers only — no cmd yet.
+        peer.start_gate.notify_one();
+        // Wait until all peer events have been processed.
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            let n = peer.branch_log.lock().unwrap().len();
+            if n >= 64 {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "peers not drained, log_len={n}"
+            );
+            std::thread::yield_now();
+        }
+        let t_w = Arc::clone(&t);
+        let jh = std::thread::spawn(move || t_w.write(b"late-cmd"));
+        let r = jh.join().expect("join");
+        assert_eq!(r, Ok(()));
+        let log = peer.branch_log.lock().unwrap().clone();
+        let first_cmd = log.iter().position(|b| *b == "cmd").expect("cmd branch");
+        let peers_before = log[..first_cmd].iter().filter(|b| **b == "peer").count();
+        assert_eq!(
+            peers_before, 64,
+            "documents CI failure mode when cmd is not ready during peer flood; log={log:?}"
         );
         t.close().unwrap();
     }
