@@ -882,3 +882,197 @@ fn vault_auth_binding_has_no_bearer_or_serialize() {
     assert!(!region.contains("bearer"));
     assert!(!region.contains("token"));
 }
+
+// ─── Task 3: native secure prompt platform modules (source contracts) ────────
+
+fn secure_prompt_dispatch_src() -> std::path::PathBuf {
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/secure_prompt.rs")
+}
+
+fn secure_prompt_platform_root() -> std::path::PathBuf {
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/secure_prompt")
+}
+
+/// Plan layout: shared trait/dispatch in `secure_prompt.rs`; platforms under
+/// `secure_prompt/{macos,windows,linux}.rs`. UnsupportedPlatform remains for non-target OS.
+#[test]
+fn secure_prompt_plan_layout_and_unsupported_platform() {
+    let dispatch = secure_prompt_dispatch_src();
+    let root = secure_prompt_platform_root();
+    assert!(dispatch.is_file(), "expected src/secure_prompt.rs dispatch");
+    assert!(root.join("macos.rs").is_file(), "expected macos.rs");
+    assert!(root.join("windows.rs").is_file(), "expected windows.rs");
+    assert!(root.join("linux.rs").is_file(), "expected linux.rs");
+    // Plan does not use secure_prompt/mod.rs as the root.
+    assert!(
+        !root.join("mod.rs").is_file(),
+        "platform dir must not own mod.rs root; dispatch is secure_prompt.rs"
+    );
+
+    let dispatch_src = std::fs::read_to_string(&dispatch).expect("secure_prompt.rs");
+    assert!(
+        dispatch_src.contains("UnsupportedPlatform"),
+        "PromptError::UnsupportedPlatform must remain"
+    );
+    assert!(
+        dispatch_src.contains("mod macos")
+            && dispatch_src.contains("mod windows")
+            && dispatch_src.contains("mod linux"),
+        "dispatch must cfg-wire platform modules"
+    );
+
+    let vault_src = std::fs::read_to_string(
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/vault/mod.rs"),
+    )
+    .expect("vault/mod.rs");
+    assert!(
+        vault_src.contains("PromptError::UnsupportedPlatform"),
+        "VaultError mapping must retain UnsupportedPlatform"
+    );
+}
+
+#[test]
+fn secure_prompt_windows_source_uses_password_edit_and_zeroizing() {
+    let win = std::fs::read_to_string(secure_prompt_platform_root().join("windows.rs"))
+        .expect("windows.rs must exist");
+    assert!(
+        win.contains("ES_PASSWORD"),
+        "Windows password field must use ES_PASSWORD"
+    );
+    assert!(
+        win.contains("EDIT") || win.contains("Edit"),
+        "Windows must use native EDIT control"
+    );
+    assert!(
+        win.contains("Zeroizing"),
+        "secrets must wrap in Zeroizing immediately"
+    );
+    assert!(
+        win.contains("DialogOutcome") && win.contains("Ok(Zeroizing"),
+        "DialogOutcome must carry Zeroizing<String>, not raw String"
+    );
+    assert!(
+        win.contains("Zeroize") || win.contains(".zeroize()"),
+        "UTF-16 scratch must be zeroized"
+    );
+    assert!(
+        win.contains("GetDlgItem") || win.contains("thread_local"),
+        "edit HWND must be per-dialog/thread-local, not process-global"
+    );
+    assert!(
+        !win.contains("static EDIT_HWND") && !win.contains("AtomicIsize"),
+        "no process-global Atomic EDIT_HWND"
+    );
+    assert!(
+        win.contains("GetMessageW"),
+        "GetMessageW must be used in private modal pump"
+    );
+    // Runtime safety: private modal pump exits via IsWindow; no thread-wide quit poison.
+    assert!(
+        !win.contains("PostQuitMessage("),
+        "WM_DESTROY must not call PostQuitMessage (stale quit for later prompts)"
+    );
+    // Explicit -1 / 0 / >0 handling in pump (all branches required; no broad OR).
+    assert!(
+        win.contains("match gm.0"),
+        "GetMessageW result must match gm.0 explicitly"
+    );
+    assert!(win.contains("-1 =>"), "GetMessageW must handle -1 as error");
+    assert!(
+        win.contains("0 => break"),
+        "GetMessageW must treat 0 as quit/break"
+    );
+    assert!(
+        win.contains("_ =>"),
+        "GetMessageW must have positive/default dispatch branch"
+    );
+    // Wrap-first only — exact pattern, no vacuous from_utf16_lossy OR.
+    assert!(
+        win.contains("Zeroizing::new(String::from_utf16_lossy"),
+        "UTF-16 secret capture must wrap Zeroizing at conversion"
+    );
+    assert!(
+        !win.contains("let s = String::from_utf16_lossy"),
+        "must not keep raw secret String local from from_utf16_lossy"
+    );
+    assert!(
+        win.contains("FileDialog") || win.contains("rfd::"),
+        "file pick must use rfd FileDialog"
+    );
+    assert!(!win.contains("#[tauri::command]"), "no secret IPC command");
+    assert!(!win.contains("invoke("), "no secret IPC invoke");
+}
+
+#[test]
+fn secure_prompt_linux_source_uses_gtk_hidden_entry_and_zeroizing() {
+    let lin = std::fs::read_to_string(secure_prompt_platform_root().join("linux.rs"))
+        .expect("linux.rs must exist");
+    assert!(
+        lin.contains("gtk") || lin.contains("gtk::"),
+        "Linux prompts must use GTK"
+    );
+    assert!(
+        lin.contains("Entry") || lin.contains("entry"),
+        "Linux password must use Entry"
+    );
+    assert!(
+        lin.contains("set_visibility") || lin.contains("visibility"),
+        "password Entry must hide input"
+    );
+    assert!(
+        lin.contains("TextView") || lin.contains("TextBuffer"),
+        "PEM paste must use multiline TextView"
+    );
+    assert!(
+        lin.contains("Zeroizing"),
+        "secrets must wrap in Zeroizing immediately"
+    );
+    assert!(
+        lin.contains("Result<Zeroizing<String>") || lin.contains("-> Result<Zeroizing<String>"),
+        "Linux helpers must return Zeroizing, not raw String"
+    );
+    // No panic on secret path for missing TextBuffer.
+    assert!(
+        !lin.contains(".buffer().expect(") && !lin.contains("buffer().expect("),
+        "TextView buffer must not expect/panic on secret path"
+    );
+    assert!(
+        lin.contains("text buffer unavailable")
+            || lin.contains("PromptError::Native")
+            || lin.contains("PromptError::Cancelled"),
+        "missing buffer must map to fixed PromptError without secret content"
+    );
+    assert!(
+        lin.contains("FileDialog") || lin.contains("rfd::"),
+        "file pick must use rfd FileDialog"
+    );
+    assert!(!lin.contains("#[tauri::command]"), "no secret IPC command");
+    assert!(!lin.contains("invoke("), "no secret IPC invoke");
+}
+
+#[test]
+fn secure_prompt_macos_source_retains_secure_text_field() {
+    let mac = std::fs::read_to_string(secure_prompt_platform_root().join("macos.rs"))
+        .expect("macos.rs must exist");
+    assert!(
+        mac.contains("NSSecureTextField"),
+        "macOS password must keep NSSecureTextField"
+    );
+    assert!(
+        mac.contains("Zeroizing"),
+        "macOS secrets must stay Zeroizing-wrapped"
+    );
+    assert!(
+        mac.contains("rfd::") || mac.contains("FileDialog"),
+        "macOS file pick stays rfd"
+    );
+    // PEM paste: wrap stringValue immediately — no raw secret String local.
+    assert!(
+        mac.contains("Zeroizing::new(field.stringValue().to_string())"),
+        "macOS PEM paste must wrap stringValue in Zeroizing immediately"
+    );
+    assert!(
+        !mac.contains("let s = field.stringValue().to_string()"),
+        "must not keep raw PEM String local from stringValue"
+    );
+}

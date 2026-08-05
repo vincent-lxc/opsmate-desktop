@@ -53,6 +53,21 @@ objc2 = "=0.6.4"
 objc2-app-kit = { version = "=0.3.2", features = ["NSWorkspace"] }
 objc2-foundation = "=0.3.2"
 
+# Windows native secure input (Win32 EDIT ES_PASSWORD / multiline) — no WebView surface.
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "=0.62.2", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_System_LibraryLoader",
+    "Win32_UI_Controls",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+# Linux native secure input (GTK3 Dialog + Entry/TextView) — no WebView surface.
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk = "=0.18.2"
+
 [features]
 default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]
