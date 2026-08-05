@@ -238,14 +238,13 @@ unsafe fn run_message_loop(
         }
     }
 
-    // Listener death after handshake without cancel: mark unhealthy then seal.
-    if unexpected_exit && !stop.load(Ordering::SeqCst) {
-        if IsWindow(Some(hwnd)).as_bool() {
-            if let Some(st) = user_state(hwnd) {
-                seal_take_unhealthy(&st.health, &st.coordinator);
-            }
+    // Listener death after handshake without cancel: mark unhealthy then seal
+    // only while the message HWND is still alive. If already destroyed, NCDESTROY
+    // fail-closed path may have sealed + marked.
+    if unexpected_exit && !stop.load(Ordering::SeqCst) && IsWindow(Some(hwnd)).as_bool() {
+        if let Some(st) = user_state(hwnd) {
+            seal_take_unhealthy(&st.health, &st.coordinator);
         }
-        // If window already gone, NCDESTROY fail-closed path may have sealed + marked.
     }
 
     // Teardown if still alive: WTS unregister (once, if registered) **before** destroy.
