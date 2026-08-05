@@ -1,0 +1,5 @@
+# Host target only — CI installs platform cross-targets explicitly (desktop-ci / desktop-release).
+[toolchain]
+channel = "1.92.0"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

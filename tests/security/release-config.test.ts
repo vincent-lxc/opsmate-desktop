@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import { deflateSync } from "node:zlib";
 import { describe, expect, it } from "vitest";
 import {
+  checkBuildJobNodeVersion,
   checkDesktopCiWorkflow,
   checkDesktopReleaseWorkflow,
   checkDesktopReleaseWorkflowContent,
@@ -37,6 +38,7 @@ import {
   REQUIRED_MAC_TAURI_CMD,
   REQUIRED_RELEASE_ENVIRONMENT,
   REQUIRED_RELEASE_TAG_PATTERN,
+  REQUIRED_NODE_VERSION,
   REQUIRED_RUST_TOOLCHAIN_ACTION,
   REQUIRED_RUST_VERSION,
   REQUIRED_SCHEMES,
@@ -151,13 +153,14 @@ describe("Task 5 release config", () => {
     expect(result.ok).toBe(true);
   });
 
-  it("desktop-ci.yml exists with three runners, Rust 1.92.0, gates, and internal-unsigned artifacts", () => {
+  it("desktop-ci.yml exists with three runners, Rust 1.92.0, Node 22.22.0, gates, and internal-unsigned artifacts", () => {
     expect(REQUIRED_CI_RUNNERS).toEqual([
       "macos-14",
       "windows-2025",
       "ubuntu-24.04",
     ]);
     expect(REQUIRED_RUST_VERSION).toBe("1.92.0");
+    expect(REQUIRED_NODE_VERSION).toBe("22.22.0");
     expect(REQUIRED_ARTIFACT_TOKEN).toBe("internal-unsigned");
     expect(REQUIRED_RUST_TOOLCHAIN_ACTION).toBe(
       "dtolnay/rust-toolchain@87eb139fed4b08a67bd1fa429a21d1f5d523e03e",
@@ -177,8 +180,242 @@ describe("Task 5 release config", () => {
     const ciErrors = checkDesktopCiWorkflow();
     expect(ciErrors, ciErrors.join("\n")).toEqual([]);
 
+    const ciYml = readFileSync(
+      resolve(root, ".github/workflows/desktop-ci.yml"),
+      "utf8",
+    );
+    expect(ciYml).toMatch(/node-version:\s*"22\.22\.0"/);
+    expect(ciYml).not.toMatch(/node-version:\s*"20"/);
+
     const lfErrors = checkGitAttributesLf();
     expect(lfErrors, lfErrors.join("\n")).toEqual([]);
+  });
+
+  it("rejects Node 20 in desktop-ci and desktop-release checker content", () => {
+    // Use full CI checker on real file is green; pure content via release path for node:
+    const badRelease = `
+on:
+  push:
+    tags:
+      - 'desktop-v*'
+permissions:
+  contents: read
+  actions: read
+jobs:
+  macos:
+    runs-on: macos-14
+    environment: desktop-release
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+  windows:
+    runs-on: windows-2025
+    environment: desktop-release
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+  linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+  release:
+    needs: [macos, windows, linux]
+    runs-on: ubuntu-24.04
+    environment: desktop-release
+    permissions:
+      contents: write
+    steps:
+      - run: echo hi
+`;
+    const errs = checkDesktopReleaseWorkflowContent(badRelease);
+    expect(errs.some((e) => /must not use Node 20/i.test(e))).toBe(true);
+    expect(
+      errs.some((e) => e.includes(REQUIRED_NODE_VERSION)),
+    ).toBe(true);
+  });
+
+  it("rejects wrong or missing Node pin on desktop-release (requires exact 22.22.0)", () => {
+    const missingNode = `
+on:
+  push:
+    tags:
+      - 'desktop-v*'
+permissions:
+  contents: read
+  actions: read
+jobs:
+  macos:
+    runs-on: macos-14
+    environment: desktop-release
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          cache: npm
+  windows:
+    runs-on: windows-2025
+    environment: desktop-release
+    steps:
+      - run: echo win
+  linux:
+    runs-on: ubuntu-24.04
+    environment: desktop-release
+    steps:
+      - run: echo linux
+  release:
+    needs: [macos, windows, linux]
+    runs-on: ubuntu-24.04
+    environment: desktop-release
+    permissions:
+      contents: write
+    steps:
+      - run: echo hi
+`;
+    const missingErrs = checkDesktopReleaseWorkflowContent(missingNode);
+    expect(
+      missingErrs.some((e) =>
+        /must set setup-node node-version|node-version must be exact/i.test(e),
+      ),
+      missingErrs.join("\n"),
+    ).toBe(true);
+
+    const wrongPin = `
+on:
+  push:
+    tags:
+      - 'desktop-v*'
+permissions:
+  contents: read
+  actions: read
+jobs:
+  macos:
+    runs-on: macos-14
+    environment: desktop-release
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+  windows:
+    runs-on: windows-2025
+    environment: desktop-release
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.22.0"
+  linux:
+    runs-on: ubuntu-24.04
+    environment: desktop-release
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.22.0"
+  release:
+    needs: [macos, windows, linux]
+    runs-on: ubuntu-24.04
+    environment: desktop-release
+    permissions:
+      contents: write
+    steps:
+      - run: echo hi
+`;
+    const wrongErrs = checkDesktopReleaseWorkflowContent(wrongPin);
+    expect(
+      wrongErrs.some((e) => /node-version must be exact 22\.22\.0/i.test(e)),
+      wrongErrs.join("\n"),
+    ).toBe(true);
+  });
+
+  it("desktop-release.yml pins exact Node 22.22.0 on all three build jobs", () => {
+    const yml = readFileSync(
+      resolve(root, ".github/workflows/desktop-release.yml"),
+      "utf8",
+    );
+    const pins = [...yml.matchAll(/node-version:\s*["']([^"']+)["']/g)].map(
+      (m) => m[1],
+    );
+    // Exactly three supported pins (macos/windows/linux); release job has none.
+    expect(pins.length).toBe(3);
+    expect(pins.every((v) => v === REQUIRED_NODE_VERSION)).toBe(true);
+    expect(yml).not.toMatch(/node-version:\s*["']20(\.|["']|$)/);
+    const releaseErrs = checkDesktopReleaseWorkflow();
+    expect(
+      releaseErrs.filter((e) => /node-version|Node 20/i.test(e)),
+      releaseErrs.join("\n"),
+    ).toEqual([]);
+  });
+
+  it("rejects missing Node pin on only one build job (per-job gate false-negative fix)", () => {
+    const base = signedReleaseHappyPathYaml();
+    // Delete only macos node-version; windows/linux remain exact 22.22.0.
+    const noMacosPin = base.replace(
+      /(jobs:\n  macos:[\s\S]*?steps:\n      - uses: actions\/setup-node@v4\n        with:\n)          node-version: "22\.22\.0"\n/,
+      "$1",
+    );
+    expect(noMacosPin).toMatch(/windows:[\s\S]*node-version:\s*"22\.22\.0"/);
+    expect(noMacosPin).toMatch(/linux:[\s\S]*node-version:\s*"22\.22\.0"/);
+    expect(
+      (noMacosPin.match(/node-version:\s*"22\.22\.0"/g) ?? []).length,
+    ).toBe(2);
+
+    const macErrs = checkDesktopReleaseWorkflowContent(noMacosPin);
+    expect(
+      macErrs.some((e) => /job 'macos'.*node-version|job 'macos'.*setup-node/i.test(e)),
+      macErrs.join("\n"),
+    ).toBe(true);
+    // Other jobs must not be the only remaining green path — macos specifically fails.
+    expect(macErrs.some((e) => e.includes("job 'macos'"))).toBe(true);
+
+    // Delete only windows node-version; macos/linux remain correct.
+    const noWindowsPin = base.replace(
+      /(jobs:[\s\S]*?windows:[\s\S]*?steps:\n      - uses: actions\/setup-node@v4\n        with:\n)          node-version: "22\.22\.0"\n/,
+      "$1",
+    );
+    expect(
+      (noWindowsPin.match(/node-version:\s*"22\.22\.0"/g) ?? []).length,
+    ).toBe(2);
+    const winErrs = checkDesktopReleaseWorkflowContent(noWindowsPin);
+    expect(
+      winErrs.some((e) => /job 'windows'.*node-version|job 'windows'.*setup-node/i.test(e)),
+      winErrs.join("\n"),
+    ).toBe(true);
+  });
+
+  it("rejects conflicting duplicate Node pins inside a single build job", () => {
+    const base = signedReleaseHappyPathYaml();
+    // Insert a second wrong pin on macos while windows/linux stay exact 22.22.0.
+    const dupWrong = base.replace(
+      /(macos:[\s\S]*?node-version: "22\.22\.0"\n)/,
+      '$1          node-version: "20"\n',
+    );
+    expect(dupWrong).toMatch(/macos:[\s\S]*node-version:\s*"22\.22\.0"[\s\S]*node-version:\s*"20"/);
+    expect(dupWrong).toMatch(/windows:[\s\S]*node-version:\s*"22\.22\.0"/);
+    expect(dupWrong).toMatch(/linux:[\s\S]*node-version:\s*"22\.22\.0"/);
+
+    const errs = checkDesktopReleaseWorkflowContent(dupWrong);
+    expect(
+      errs.some(
+        (e) =>
+          /job 'macos'.*conflicting node-version/i.test(e) ||
+          (/job 'macos'/i.test(e) && /Node 20|got 20/i.test(e)),
+      ),
+      errs.join("\n"),
+    ).toBe(true);
+
+    // Unit helper: two conflicting pins in one job body.
+    const unit = checkBuildJobNodeVersion(
+      `
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.22.0"
+          node-version: "18"
+`,
+      "macos",
+    );
+    expect(unit.some((e) => /conflicting node-version/i.test(e))).toBe(true);
   });
 
   it("checkGitAttributesLfContent rejects extra/missing/changed rules (pure, no repo mutate)", () => {
@@ -750,6 +987,10 @@ jobs:
       APPLE_PASSWORD: \${{ secrets.APPLE_PASSWORD }}
       APPLE_TEAM_ID: \${{ secrets.APPLE_TEAM_ID }}
     steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.22.0"
+          cache: npm
       - run: npm run tauri -- build --target universal-apple-darwin --bundles dmg
       - run: codesign --verify --deep --strict out.app
       - run: spctl --assess --type execute out.app
@@ -762,6 +1003,10 @@ jobs:
     runs-on: windows-2025
     environment: desktop-release
     steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.22.0"
+          cache: npm
       - run: npm run tauri -- build --bundles nsis
       - name: upload unsigned nsis
         id: unsigned_nsis
@@ -791,6 +1036,10 @@ jobs:
   linux:
     runs-on: ubuntu-24.04
     steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.22.0"
+          cache: npm
       - run: npm run tauri -- build --bundles appimage,deb
       - uses: actions/upload-artifact@v4
         with:
@@ -1152,11 +1401,10 @@ describe("Task 8A desktop signed-release controls", () => {
 
   it("rejects upload before macos verification order and forbidden on: events", () => {
     let yml = signedReleaseHappyPathYaml();
-    // put upload before ordered verify steps
+    // put upload before ordered verify steps (after setup-node + build)
     yml = yml.replace(
-      /    steps:\n      - run: npm run tauri -- build --target universal-apple-darwin --bundles dmg\n      - run: codesign --verify --deep --strict out.app\n      - run: spctl --assess --type execute out.app\n      - run: xcrun stapler validate out.dmg\n      - uses: actions\/upload-artifact@v4\n        with:\n          name: opsmate-macos-signed-notarized\n          path: out.dmg\n/,
-      `    steps:
-      - run: npm run tauri -- build --target universal-apple-darwin --bundles dmg
+      /- run: npm run tauri -- build --target universal-apple-darwin --bundles dmg\n      - run: codesign --verify --deep --strict out.app\n      - run: spctl --assess --type execute out.app\n      - run: xcrun stapler validate out.dmg\n      - uses: actions\/upload-artifact@v4\n        with:\n          name: opsmate-macos-signed-notarized\n          path: out.dmg\n/,
+      `- run: npm run tauri -- build --target universal-apple-darwin --bundles dmg
       - uses: actions/upload-artifact@v4
         with:
           name: ${ARTIFACT_MACOS}

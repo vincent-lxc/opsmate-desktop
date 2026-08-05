@@ -1,4 +1,4 @@
-import { NavLink } from "react-router-dom";
+import { NavLink } from "react-router";
 import { DESKTOP_NAV_ITEMS } from "./navigation";
 import { AppRoutes } from "./routes";
 

@@ -55,6 +55,8 @@ export const REQUIRED_SIGNPATH_SECRET_NAMES = [
 /** Required GitHub-hosted runners (exact). */
 export const REQUIRED_CI_RUNNERS = ["macos-14", "windows-2025", "ubuntu-24.04"];
 export const REQUIRED_RUST_VERSION = "1.92.0";
+/** react-router 8.3 engines.node; pin exact line in CI/release workflows. */
+export const REQUIRED_NODE_VERSION = "22.22.0";
 export const REQUIRED_ARTIFACT_TOKEN = "internal-unsigned";
 
 /** Generated contract outputs that must stay LF on Windows checkout. */
@@ -404,6 +406,21 @@ export function checkDesktopCiWorkflow() {
   }
   if (!yml.includes(REQUIRED_RUST_VERSION)) {
     errors.push(`desktop-ci.yml must pin Rust ${REQUIRED_RUST_VERSION}`);
+  }
+  // Node line must satisfy react-router 8.3 engines (reject Node 20).
+  if (
+    !new RegExp(
+      `node-version:\\s*["']${REQUIRED_NODE_VERSION.replace(/\./g, "\\.")}["']`,
+    ).test(yml)
+  ) {
+    errors.push(
+      `desktop-ci.yml must set setup-node node-version to exact ${REQUIRED_NODE_VERSION}`,
+    );
+  }
+  if (/node-version:\s*["']20(\.|\s|["']|$)/.test(yml)) {
+    errors.push(
+      "desktop-ci.yml must not use Node 20 (react-router 8.3 requires >=22.22.0)",
+    );
   }
   // Core npm/cargo gates
   for (const needle of [
@@ -1033,6 +1050,76 @@ export const ARTIFACT_WINDOWS = "opsmate-windows-signed";
 export const ARTIFACT_LINUX = "opsmate-linux-release";
 
 /**
+ * Per-build-job Node pin gate for desktop-release (react-router 8.3 engines).
+ * Requires actions/setup-node with exact REQUIRED_NODE_VERSION; rejects missing,
+ * Node 20, wrong pins, and duplicate conflicting node-version values in the job.
+ * Prefer setup-node step bodies when steps parse; fall back to whole job text.
+ *
+ * @param {string} jobBody
+ * @param {string} jobName macos|windows|linux
+ * @returns {string[]}
+ */
+export function checkBuildJobNodeVersion(jobBody, jobName) {
+  const errors = [];
+  const body = String(jobBody ?? "");
+  const steps = extractJobSteps(body);
+  const setupNodeSteps = steps.filter((s) =>
+    /uses:\s*actions\/setup-node@/i.test(s),
+  );
+
+  /** @type {string[]} */
+  let pins = [];
+  if (setupNodeSteps.length > 0) {
+    for (const step of setupNodeSteps) {
+      pins.push(
+        ...[...step.matchAll(/node-version:\s*["']([^"']+)["']/g)].map(
+          (m) => m[1],
+        ),
+      );
+    }
+  } else {
+    // No setup-node step found via steps parse — still scan job body.
+    if (!/actions\/setup-node@/i.test(body)) {
+      errors.push(
+        `desktop-release.yml job '${jobName}' must use actions/setup-node with node-version ${REQUIRED_NODE_VERSION}`,
+      );
+      return errors;
+    }
+    pins = [
+      ...body.matchAll(/node-version:\s*["']([^"']+)["']/g),
+    ].map((m) => m[1]);
+  }
+
+  if (pins.length === 0) {
+    errors.push(
+      `desktop-release.yml job '${jobName}' must set setup-node node-version to exact ${REQUIRED_NODE_VERSION}`,
+    );
+    return errors;
+  }
+
+  const unique = [...new Set(pins)];
+  if (unique.length > 1) {
+    errors.push(
+      `desktop-release.yml job '${jobName}' has conflicting node-version pins (${unique.join(", ")}); require single exact ${REQUIRED_NODE_VERSION}`,
+    );
+  }
+
+  for (const v of unique) {
+    if (v === "20" || v.startsWith("20.")) {
+      errors.push(
+        `desktop-release.yml job '${jobName}' must not use Node 20 (react-router 8.3 requires >=22.22.0)`,
+      );
+    } else if (v !== REQUIRED_NODE_VERSION) {
+      errors.push(
+        `desktop-release.yml job '${jobName}' node-version must be exact ${REQUIRED_NODE_VERSION} (got ${v})`,
+      );
+    }
+  }
+
+  return errors;
+}
+
+/**
  * Pure content validator for desktop-release.yml (Task 8 signed release).
  * @param {string} yml
  * @returns {string[]}
@@ -1116,6 +1203,10 @@ export function checkDesktopReleaseWorkflowContent(yml) {
     );
   }
 
+  // Per-job Node pins (macos/windows/linux) are validated after extractWorkflowJobs.
+  // Global whole-file node-version counts are intentionally NOT sufficient: a missing
+  // pin on one build job must fail even when other jobs retain exact 22.22.0.
+
   const jobs = extractWorkflowJobs(text);
   for (const name of ["macos", "windows", "linux", "release"]) {
     if (typeof jobs[name] !== "string") {
@@ -1129,6 +1220,13 @@ export function checkDesktopReleaseWorkflowContent(yml) {
     typeof jobs.release !== "string"
   ) {
     return errors;
+  }
+
+  // react-router 8.3 engines: each build job must use setup-node with exact Node pin.
+  // release job need not install Node (artifact staging / gh only).
+  for (const name of ["macos", "windows", "linux"]) {
+    const jobErrors = checkBuildJobNodeVersion(jobs[name], name);
+    for (const e of jobErrors) errors.push(e);
   }
 
   for (const name of ["macos", "windows", "release"]) {
