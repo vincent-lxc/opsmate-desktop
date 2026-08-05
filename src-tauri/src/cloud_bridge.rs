@@ -9,7 +9,8 @@ use crate::cloud_transport::{
     TransportError,
 };
 use crate::security_cutoff::SecurityCutoff;
-use crate::vault::VaultService;
+use crate::vault::{VaultError, VaultService};
+use crate::vault_os_sleep::ObserverHealth;
 use serde::Deserialize;
 use serde_json::Value;
 use std::sync::Arc;
@@ -173,6 +174,8 @@ pub struct CloudBridge<B: HttpBackend = ReqwestBackend> {
     pub auth: Arc<AuthStore>,
     pub vault: Arc<VaultService>,
     pub hooks: Arc<ProductionLifecycleHooks>,
+    /// Shared OS sleep observer health (Task 4). Unlock gates fail closed when unhealthy.
+    pub observer_health: Arc<ObserverHealth>,
 }
 
 impl CloudBridge<ReqwestBackend> {
@@ -183,6 +186,7 @@ impl CloudBridge<ReqwestBackend> {
         emitter: Arc<dyn SessionInvalidatedEmitter>,
     ) -> Result<Self, TransportError> {
         let cutoff = Arc::new(SecurityCutoff::new());
+        let observer_health = ObserverHealth::new_healthy();
         let hooks = Arc::new(ProductionLifecycleHooks::new(
             auth.clone(),
             cutoff.clone(),
@@ -197,6 +201,7 @@ impl CloudBridge<ReqwestBackend> {
             auth,
             vault,
             hooks,
+            observer_health,
         })
     }
 }
@@ -224,6 +229,7 @@ impl<B: HttpBackend> CloudBridge<B> {
             auth,
             vault,
             hooks,
+            observer_health: ObserverHealth::new_healthy(),
         }
     }
 
@@ -248,7 +254,13 @@ impl<B: HttpBackend> CloudBridge<B> {
             auth,
             vault,
             hooks,
+            observer_health: ObserverHealth::new_healthy(),
         }
+    }
+
+    /// Shared observer-health latch (passed into `OsSleepRegistration::register`).
+    pub fn observer_health(&self) -> &Arc<ObserverHealth> {
+        &self.observer_health
     }
 
     /// Core cloud call: snapshot bearer+epoch under one lock, then await without holding it.
@@ -349,8 +361,15 @@ impl<B: HttpBackend> CloudBridge<B> {
     }
 
     /// Notify SecurityCutoff that the real vault is unlocked (Task 8 unlock path only).
-    pub fn notify_vault_unlocked(&self) {
-        self.cutoff.unlock_vault_for_task8();
+    ///
+    /// Health check and cutoff unlock share one critical section via
+    /// [`ObserverHealth::run_if_healthy`] — no TOCTOU with concurrent listener death.
+    pub fn notify_vault_unlocked(&self) -> Result<(), VaultError> {
+        self.observer_health
+            .run_if_healthy(|| {
+                self.cutoff.unlock_vault_for_task8();
+            })
+            .map_err(|_| VaultError::ObserverUnavailable)
     }
 
     /// Notify SecurityCutoff that the real vault is locked/sealed.
@@ -359,6 +378,23 @@ impl<B: HttpBackend> CloudBridge<B> {
     /// explicit user lock (SSH close + cutoff **before** Stronghold seal).
     pub fn notify_vault_locked(&self) {
         self.cutoff.lock_vault();
+    }
+
+    /// After Stronghold unlocked but observer health failed: SSH close + cutoff lock +
+    /// real seal before returning a fixed public error to IPC.
+    pub fn fail_closed_after_observer_loss(&self) {
+        let _ = self.perform_user_vault_lock();
+        // Ensure sticky locked even if seal was NotNeeded / error.
+        self.cutoff.lock_vault();
+    }
+
+    /// Pre-unlock gate used by IPC / tests: fixed public error when observers are dead.
+    pub fn require_observer_healthy(&self) -> Result<(), VaultError> {
+        if self.observer_health.is_healthy() {
+            Ok(())
+        } else {
+            Err(VaultError::ObserverUnavailable)
+        }
     }
 
     /// Explicit user vault lock: close all SSH authority + lock SecurityCutoff **before**

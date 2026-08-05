@@ -94,6 +94,9 @@ pub enum VaultError {
     Storage,
     #[error("internal error")]
     Internal,
+    /// OS sleep/lock observers died unexpectedly — unlock fail-closed (Task 4 health latch).
+    #[error("vault lifecycle observer unavailable")]
+    ObserverUnavailable,
 }
 
 impl From<PromptError> for VaultError {
@@ -906,6 +909,7 @@ impl VaultService {
             VaultError::PromptFailed => "vault_prompt_failed",
             VaultError::Storage => "vault_storage_error",
             VaultError::Internal => "vault_internal_error",
+            VaultError::ObserverUnavailable => "vault_observer_unavailable",
         }
     }
 

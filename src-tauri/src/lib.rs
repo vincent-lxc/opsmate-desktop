@@ -149,9 +149,9 @@ fn vault_init(
     Ok(st)
 }
 
-/// After successful Stronghold unlock: require **fresh** AuthBinding match before
-/// unlocking SecurityCutoff or returning success. On mismatch: seal real vault,
-/// keep cutoff locked, return vault_unauthenticated.
+/// After successful Stronghold unlock: require **fresh** AuthBinding match **and**
+/// healthy OS sleep observers before unlocking SecurityCutoff or returning success.
+/// On mismatch / unhealthy: reseal real vault, keep cutoff locked, fixed public error.
 fn finalize_vault_unlock<B: HttpBackend>(
     vault: &VaultService,
     auth: &AuthStore,
@@ -159,6 +159,11 @@ fn finalize_vault_unlock<B: HttpBackend>(
     expected: &AuthBinding,
     st: VaultStatus,
 ) -> Result<VaultStatus, String> {
+    // Observer may have died during unlock — revalidate before any cutoff unlock.
+    if !cloud.observer_health().is_healthy() {
+        cloud.fail_closed_after_observer_loss();
+        return Err(map_vault(VaultError::ObserverUnavailable));
+    }
     if !auth.binding_still_current(expected) {
         let _ = vault.on_logout();
         // Never notify_vault_unlocked — leave / force SecurityCutoff locked.
@@ -166,19 +171,30 @@ fn finalize_vault_unlock<B: HttpBackend>(
         return Err(map_vault(VaultError::Unauthenticated));
     }
     if st.unlocked {
-        cloud.notify_vault_unlocked();
+        // Final health check + SecurityCutoff unlock are one critical section
+        // (`run_if_healthy`); no separate is_healthy→notify TOCTOU window.
+        if let Err(e) = cloud.notify_vault_unlocked() {
+            // Unhealthy (or lost race): reseal so Stronghold cannot stay open with cutoff unlocked.
+            cloud.fail_closed_after_observer_loss();
+            return Err(map_vault(e));
+        }
     }
     Ok(st)
 }
 
 /// Unlock: capture AuthBinding before password prompt; revalidate via for_binding path
 /// **and** again after unlock before cutoff unlock / success return.
+/// OS sleep observer health is checked before prompt/unlock and again in finalize.
 #[tauri::command]
 fn vault_unlock(
     vault: State<'_, Arc<VaultService>>,
     auth: State<'_, Arc<AuthStore>>,
     cloud: State<'_, Arc<CloudBridge>>,
 ) -> Result<VaultStatus, String> {
+    // Pre-unlock: refuse if observers already dead (hollow managed registration).
+    if !cloud.observer_health().is_healthy() {
+        return Err(map_vault(VaultError::ObserverUnavailable));
+    }
     let expected = auth
         .auth_binding()
         .ok_or_else(|| map_vault(VaultError::Unauthenticated))?;
@@ -191,9 +207,14 @@ fn vault_unlock(
         cloud.notify_vault_locked();
         return Err(map_vault(VaultError::Unauthenticated));
     }
+    // Re-check health after prompt (listener may have died while modal was open).
+    if !cloud.observer_health().is_healthy() {
+        return Err(map_vault(VaultError::ObserverUnavailable));
+    }
     let st = vault
         .unlock_with_password_for_binding(auth.inner(), &expected, pw)
         .map_err(map_vault)?;
+    // Post-Stronghold unlock race covered in finalize (health before cutoff unlock).
     finalize_vault_unlock(vault.inner(), auth.inner(), cloud.inner(), &expected, st)
 }
 
@@ -280,7 +301,12 @@ pub fn run() {
                 let lifecycle = VaultLifecycleCoordinator::new(vault, cloud.cutoff.clone());
                 app.manage(lifecycle.clone());
                 // RAII sleep/wake observers (Drop removes both); retained in managed state.
-                let os_sleep = vault_os_sleep::OsSleepRegistration::register(lifecycle.clone());
+                // Share CloudBridge observer-health latch so unexpected death blocks later unlock.
+                // Fail closed if OS sleep/lock registration handshake fails — never manage hollow.
+                let os_sleep = vault_os_sleep::OsSleepRegistration::register(
+                    lifecycle.clone(),
+                    cloud.observer_health().clone(),
+                )?;
                 app.manage(os_sleep);
                 let watchdog = VaultIdleWatchdog::new(lifecycle);
                 watchdog.spawn_background(DEFAULT_IDLE_POLL);
@@ -640,6 +666,12 @@ mod tests {
         // build().run for lifecycle events (not bare .run(generate_context)).
         assert!(prod.contains(".build(tauri::generate_context!())"));
         assert!(prod.contains("OsSleepRegistration::register"));
+        // register returns Result — setup uses ? so failure aborts (fail closed, no hollow manage).
+        assert!(
+            prod.contains("OsSleepRegistration::register(lifecycle.clone())?")
+                || (prod.contains("OsSleepRegistration::register") && prod.contains('?')),
+            "OS sleep register failure must fail setup closed via ?"
+        );
         assert!(prod.contains("on_process_exit"));
         // Explicit unregister on both ExitRequested and Exit.
         assert!(prod.contains("reg.unregister()"));
@@ -794,6 +826,195 @@ mod tests {
         assert!(
             cutoff.is_vault_locked(),
             "cutoff must remain locked when binding mismatches after unlock"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// TOCTOU fix: notify_vault_unlocked uses run_if_healthy (check+unlock one CS).
+    #[test]
+    fn notify_vault_unlocked_uses_run_if_healthy_not_separate_is_healthy() {
+        let cloud = include_str!("cloud_bridge.rs");
+        let notify = cloud
+            .split("fn notify_vault_unlocked")
+            .nth(1)
+            .unwrap()
+            .split("/// Notify SecurityCutoff that the real vault is locked")
+            .next()
+            .unwrap();
+        assert!(
+            notify.contains("run_if_healthy"),
+            "notify must gate cutoff unlock via run_if_healthy critical section"
+        );
+        // Must not use separate is_healthy then unlock outside the gate.
+        assert!(
+            !notify.contains("if !self.observer_health.is_healthy()")
+                && !notify.contains("if !self.observer_health().is_healthy()"),
+            "must not TOCTOU with is_healthy then unlock_vault outside CS"
+        );
+        assert!(notify.contains("unlock_vault_for_task8"));
+    }
+
+    /// Core race: Stronghold unlocked, then observer dies before finalize → reseal + cutoff locked.
+    #[tokio::test]
+    async fn finalize_observer_death_after_unlock_reseals_and_keeps_cutoff_locked() {
+        use crate::auth::AuthStore;
+        use crate::cloud_bridge::{CloudBridge, SpyEmitter};
+        use crate::cloud_transport::client::MockHttpBackend;
+        use crate::security_cutoff::SecurityCutoff;
+        use crate::vault::VaultService;
+        use std::sync::Arc;
+        use std::time::Instant;
+        use tauri_plugin_stronghold::stronghold::Stronghold;
+
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "opsmate-obs-death-{}-{}.hold",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let auth = Arc::new(AuthStore::new());
+        auth.install_session_for_tests("t1", "alice", "admin", "sub-1");
+        let expected = auth.auth_binding().unwrap();
+        let sh = Stronghold::new(&path, vec![0xB2u8; 32]).expect("sh");
+        let vault = Arc::new(VaultService::new(path.clone()));
+        vault.test_inject_unlocked(sh, expected.clone(), path.clone(), Instant::now());
+        assert!(vault.is_unlocked());
+
+        let cutoff = Arc::new(SecurityCutoff::new());
+        assert!(cutoff.is_vault_locked());
+        let cloud = CloudBridge::with_backend_cutoff(
+            auth.clone(),
+            vault.clone(),
+            MockHttpBackend::new("{}"),
+            cutoff.clone(),
+            Arc::new(SpyEmitter::new()),
+        );
+        assert!(cloud.observer_health().is_healthy());
+
+        // Simulate unexpected OS sleep listener death after Stronghold unlock.
+        cloud.observer_health().mark_unhealthy();
+        assert!(!cloud.observer_health().is_healthy());
+
+        let st = VaultStatus {
+            unlocked: true,
+            locked_reason: None,
+        };
+        let err = finalize_vault_unlock(&vault, &auth, &cloud, &expected, st).unwrap_err();
+        assert_eq!(err, "vault_observer_unavailable");
+        assert!(
+            !vault.is_unlocked(),
+            "must reseal Stronghold when observer dies mid-unlock"
+        );
+        assert!(
+            cutoff.is_vault_locked(),
+            "SecurityCutoff must stay locked after observer-loss reseal"
+        );
+        // Cannot notify unlock while unhealthy (run_if_healthy refuses).
+        assert!(cloud.notify_vault_unlocked().is_err());
+        assert!(cutoff.is_vault_locked());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// Controllable interleaving: failure during notify's critical-section wait still ends locked.
+    #[test]
+    fn notify_unlock_interleaved_with_mark_unhealthy_ends_locked() {
+        use crate::auth::AuthStore;
+        use crate::cloud_bridge::{CloudBridge, SpyEmitter};
+        use crate::cloud_transport::client::MockHttpBackend;
+        use crate::security_cutoff::SecurityCutoff;
+        use crate::vault::VaultService;
+        use std::sync::{Arc, Barrier};
+        use std::thread;
+
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "opsmate-obs-interleave-{}-{}.hold",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let auth = Arc::new(AuthStore::new());
+        let vault = Arc::new(VaultService::new(path.clone()));
+        let cutoff = Arc::new(SecurityCutoff::new());
+        let cloud = CloudBridge::with_backend_cutoff(
+            auth,
+            vault,
+            MockHttpBackend::new("{}"),
+            cutoff.clone(),
+            Arc::new(SpyEmitter::new()),
+        );
+
+        let barrier = Arc::new(Barrier::new(2));
+        let b1 = Arc::clone(&barrier);
+        cloud
+            .observer_health()
+            .set_test_after_check_before_op(move || {
+                b1.wait();
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            });
+
+        let health = cloud.observer_health().clone();
+        let cutoff2 = Arc::clone(&cutoff);
+        let fail = thread::spawn(move || {
+            barrier.wait();
+            health.mark_unhealthy_then(|| {
+                cutoff2.lock_vault();
+            });
+        });
+
+        // May succeed (unlock under CS) then failure re-locks, or refuse if mark raced after.
+        let _ = cloud.notify_vault_unlocked();
+        fail.join().expect("fail");
+        assert!(!cloud.observer_health().is_healthy());
+        assert!(
+            cutoff.is_vault_locked(),
+            "interleaved notify + mark_unhealthy_then must end with cutoff locked"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn notify_vault_unlocked_refuses_when_observer_unhealthy() {
+        use crate::auth::AuthStore;
+        use crate::cloud_bridge::{CloudBridge, SpyEmitter};
+        use crate::cloud_transport::client::MockHttpBackend;
+        use crate::security_cutoff::SecurityCutoff;
+        use crate::vault::VaultService;
+        use std::sync::Arc;
+
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "opsmate-obs-notify-{}-{}.hold",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let auth = Arc::new(AuthStore::new());
+        let vault = Arc::new(VaultService::new(path.clone()));
+        let cutoff = Arc::new(SecurityCutoff::new());
+        let cloud = CloudBridge::with_backend_cutoff(
+            auth,
+            vault,
+            MockHttpBackend::new("{}"),
+            cutoff.clone(),
+            Arc::new(SpyEmitter::new()),
+        );
+        assert!(cloud.observer_health().is_healthy());
+        cloud.observer_health().mark_unhealthy();
+        assert!(matches!(
+            cloud.notify_vault_unlocked(),
+            Err(crate::vault::VaultError::ObserverUnavailable)
+        ));
+        assert!(
+            cutoff.is_vault_locked(),
+            "unhealthy path must not unlock SecurityCutoff"
         );
         let _ = std::fs::remove_file(&path);
     }

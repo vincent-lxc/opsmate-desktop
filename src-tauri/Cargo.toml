@@ -59,14 +59,18 @@ windows = { version = "=0.62.2", features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",
     "Win32_System_LibraryLoader",
+    "Win32_System_RemoteDesktop",
     "Win32_UI_Controls",
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_WindowsAndMessaging",
 ] }
 
 # Linux native secure input (GTK3 Dialog + Entry/TextView) — no WebView surface.
+# Task 4: zbus logind PrepareForSleep + Session Lock for vault lifecycle.
+# Stream trait: use zbus::export::futures_core (no direct futures-core / futures-util).
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk = "=0.18.2"
+zbus = { version = "=5.18.0", default-features = false, features = ["tokio"] }
 
 [features]
 default = ["custom-protocol"]
