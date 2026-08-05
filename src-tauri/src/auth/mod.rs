@@ -18,10 +18,11 @@ mod session;
 #[cfg(test)]
 mod tests;
 
+pub use crate::platform_random::SystemRandomSource;
 pub use http::{AuthHttp, ExchangeRequest, TokioAuthHttp};
 pub use pkce::{
     base64url_nopad, generate_code_verifier, generate_state, percent_encode, pkce_s256_challenge,
-    RandomSource, SecRandomSource,
+    RandomSource,
 };
 pub use session::{
     AuthBeginResponse, AuthBinding, AuthStore, NativeAuthSnapshot, NativePrincipal, SessionStatus,

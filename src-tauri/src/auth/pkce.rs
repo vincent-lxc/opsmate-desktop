@@ -8,40 +8,11 @@ use zeroize::Zeroize;
 use super::AuthError;
 
 /// Adapter for cryptographic random bytes (testable).
+///
+/// Production uses [`crate::platform_random::SystemRandomSource`] (`getrandom`).
+/// Tests inject deterministic `RandomSource` implementations.
 pub trait RandomSource: Send + Sync {
     fn fill_bytes(&self, dest: &mut [u8]) -> Result<(), AuthError>;
-}
-
-/// Production random via macOS Security.framework `SecRandomCopyBytes`.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct SecRandomSource;
-
-#[cfg(target_os = "macos")]
-impl RandomSource for SecRandomSource {
-    fn fill_bytes(&self, dest: &mut [u8]) -> Result<(), AuthError> {
-        #[link(name = "Security", kind = "framework")]
-        extern "C" {
-            fn SecRandomCopyBytes(
-                rnd: *const std::ffi::c_void,
-                count: usize,
-                bytes: *mut u8,
-            ) -> i32;
-        }
-        let rc = unsafe { SecRandomCopyBytes(std::ptr::null(), dest.len(), dest.as_mut_ptr()) };
-        if rc == 0 {
-            Ok(())
-        } else {
-            Err(AuthError::Random)
-        }
-    }
-}
-
-#[cfg(not(target_os = "macos"))]
-impl RandomSource for SecRandomSource {
-    fn fill_bytes(&self, dest: &mut [u8]) -> Result<(), AuthError> {
-        dest.fill(0);
-        Err(AuthError::Random)
-    }
 }
 
 const B64URL: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";

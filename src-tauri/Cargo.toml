@@ -38,6 +38,8 @@ serde_json = "=1.0.140"
 sha2 = "=0.10.8"
 # Token material wipe-on-drop
 zeroize = { version = "=1.9.0", default-features = false, features = ["alloc"] }
+# Cross-platform CSPRNG for PKCE / session ids (Task 2; no SecRandom FFI)
+getrandom = "=0.4.3"
 # Fixed-origin HTTPS for config + exchange (rustls only; no native-tls)
 reqwest = { version = "=0.12.15", default-features = false, features = ["rustls-tls", "json"] }
 # rt + time: production pending-PKCE async timer (shared runtime; no OS thread per login)

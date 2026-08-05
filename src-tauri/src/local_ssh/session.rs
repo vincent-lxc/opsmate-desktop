@@ -215,13 +215,18 @@ impl std::fmt::Debug for LocalSshSessionManager {
 }
 
 impl LocalSshSessionManager {
-    /// Production constructor: CSPRNG via [`crate::auth::SecRandomSource`].
+    /// Production constructor: CSPRNG via [`crate::auth::SystemRandomSource`].
     pub fn new(
         auth: Arc<AuthStore>,
         vault: Arc<VaultService>,
         cutoff: Arc<SecurityCutoff>,
     ) -> Arc<Self> {
-        Self::with_rng(auth, vault, cutoff, Arc::new(crate::auth::SecRandomSource))
+        Self::with_rng(
+            auth,
+            vault,
+            cutoff,
+            Arc::new(crate::auth::SystemRandomSource),
+        )
     }
 
     pub fn with_rng(
@@ -713,7 +718,7 @@ fn attach_session_manager_to_vault_inner(
     manager
 }
 
-/// Production helper: create one manager Arc (SecRandomSource) and attach as vault sink.
+/// Production helper: create one manager Arc (SystemRandomSource) and attach as vault sink.
 /// Used by `run()` so wiring is testable without Tauri.
 pub fn attach_session_manager_to_vault(
     auth: Arc<AuthStore>,
@@ -1458,7 +1463,7 @@ mod tests {
             .expect("test wrapper marker after production attach");
         assert!(
             attach_prod_body.contains("LocalSshSessionManager::new"),
-            "production attach must construct via new/SecRandomSource"
+            "production attach must construct via new/SystemRandomSource"
         );
         assert!(
             attach_prod_body.contains("attach_session_manager_to_vault_inner"),

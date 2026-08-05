@@ -878,6 +878,67 @@ fn mark_reauth_required_if_epoch_poison_is_err_not_stale() {
     ));
 }
 
+// ─── Task 2: cross-platform production CSPRNG ────────────────────────────────
+
+/// RED contract: production RNG must not zero-fill-then-fail (legacy non-macOS
+/// `SecRandomSource` design). After Task 2, `pkce.rs` has no FFI/zero-fill path.
+#[test]
+fn production_rng_must_not_zero_fill_then_fail() {
+    let pkce = std::fs::read_to_string(
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/auth/pkce.rs"),
+    )
+    .unwrap();
+    assert!(
+        !pkce.contains("SecRandomCopyBytes"),
+        "macOS SecRandomCopyBytes FFI must be removed"
+    );
+    assert!(
+        !pkce.contains("dest.fill(0)"),
+        "zero-fill failure path must be removed (no fallback zeros)"
+    );
+    assert!(
+        !pkce.contains("struct SecRandomSource"),
+        "SecRandomSource must be fully replaced by SystemRandomSource"
+    );
+}
+
+/// Production `SystemRandomSource` succeeds and does not leave an all-zero buffer.
+#[test]
+fn system_random_source_fills_nonzero_bytes() {
+    use crate::platform_random::SystemRandomSource;
+    let rng = SystemRandomSource;
+    let mut a = [0u8; 32];
+    let mut b = [0u8; 32];
+    rng.fill_bytes(&mut a).expect("SystemRandomSource fill");
+    rng.fill_bytes(&mut b).expect("SystemRandomSource fill");
+    assert!(
+        a.iter().any(|x| *x != 0),
+        "CSPRNG output must not be all zeros"
+    );
+    assert_ne!(a, b, "independent fills must not be identical");
+}
+
+/// Generated state/verifier under production source are nonzero-length and nonrepeating.
+#[test]
+fn system_random_state_and_verifier_nonzero_nonrepeating() {
+    use crate::platform_random::SystemRandomSource;
+    let rng = SystemRandomSource;
+    let s1 = generate_state(&rng).expect("state");
+    let s2 = generate_state(&rng).expect("state");
+    let v1 = generate_code_verifier(&rng).expect("verifier");
+    let v2 = generate_code_verifier(&rng).expect("verifier");
+    assert!(!s1.is_empty() && !s2.is_empty());
+    assert!(!v1.is_empty() && !v2.is_empty());
+    assert_ne!(s1, s2, "states must not repeat across calls");
+    assert_ne!(v1, v2, "verifiers must not repeat across calls");
+    // Base64url alphabet only — no padding/secrets in encoding path.
+    for s in [&s1, &s2, &v1, &v2] {
+        assert!(s
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'));
+    }
+}
+
 #[test]
 fn auth_cargo_toml_has_no_direct_open_dependency() {
     let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");

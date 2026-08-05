@@ -1520,9 +1520,9 @@ fn salt_path(snapshot: &Path) -> PathBuf {
 }
 
 fn random_salt() -> Result<Vec<u8>, VaultError> {
-    use crate::auth::{RandomSource, SecRandomSource};
+    use crate::auth::{RandomSource, SystemRandomSource};
     let mut salt = vec![0u8; SALT_LEN];
-    SecRandomSource
+    SystemRandomSource
         .fill_bytes(&mut salt)
         .map_err(|_| VaultError::Storage)?;
     Ok(salt)

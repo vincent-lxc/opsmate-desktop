@@ -14,6 +14,8 @@ pub mod cloud_bridge;
 pub mod cloud_transport;
 /// Local SSH preparation boundary (8B1) — crate-internal only; no IPC registration.
 pub(crate) mod local_ssh;
+/// Cross-platform CSPRNG (Task 2) — `getrandom`, no platform FFI.
+pub mod platform_random;
 pub mod secure_prompt;
 pub mod security_cutoff;
 /// Stronghold vault core + runtime (no Stronghold plugin registration).
@@ -24,8 +26,8 @@ pub mod vault_os_sleep;
 
 use auth::{
     map_auth_public, perform_begin_logto_arc, perform_handle_deep_link, perform_session_status,
-    AuthBeginResponse, AuthBinding, AuthError, AuthStore, BrowserOpener, SecRandomSource,
-    SessionStatus, TokioAuthHttp,
+    AuthBeginResponse, AuthBinding, AuthError, AuthStore, BrowserOpener, SessionStatus,
+    SystemRandomSource, TokioAuthHttp,
 };
 use cloud_bridge::{map_cloud_public, CloudBridge, CloudCallArgs, SessionInvalidatedEmitter};
 use cloud_transport::HttpBackend;
@@ -87,7 +89,7 @@ fn auth_begin_logto(
 ) -> Result<AuthBeginResponse, String> {
     let http = TokioAuthHttp::new();
     let opener = TauriBrowserOpener { app };
-    let rng = SecRandomSource;
+    let rng = SystemRandomSource;
     let store = Arc::clone(store.inner());
     perform_begin_logto_arc(store, &rng, &http, &opener).map_err(map_auth)
 }
