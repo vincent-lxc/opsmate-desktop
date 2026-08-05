@@ -1,7 +1,7 @@
 /**
- * Task 5/6 — three-platform release config + branch CI gate (no extra deps).
- * Validates tauri.conf.json, icons, and .github/workflows/desktop-ci.yml.
- * Exit 0 only when all checks pass. Importable from vitest.
+ * Task 5/6/8 — three-platform release config + branch CI + signed-release gates
+ * (no extra deps). Validates tauri.conf.json, icons, desktop-ci.yml, and
+ * (when present) desktop-release.yml + SignPath policy. Importable from vitest.
  */
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, resolve } from "node:path";
@@ -19,6 +19,38 @@ export const CAPABILITIES_PATH = resolve(
 /** Task 6 three-platform internal CI workflow. */
 export const DESKTOP_CI_PATH = resolve(ROOT, ".github/workflows/desktop-ci.yml");
 export const GITATTRIBUTES_PATH = resolve(ROOT, ".gitattributes");
+
+/** Task 8 protected signed-release workflow + SignPath policy. */
+export const DESKTOP_RELEASE_PATH = resolve(
+  ROOT,
+  ".github/workflows/desktop-release.yml",
+);
+export const SIGNPATH_POLICY_PATH = resolve(
+  ROOT,
+  ".signpath/policies/opsmate-desktop/release-signing.yml",
+);
+export const REQUIRED_RELEASE_ENVIRONMENT = "desktop-release";
+export const REQUIRED_RELEASE_TAG_PATTERN = "desktop-v*";
+export const REQUIRED_APPLE_SECRET_NAMES = [
+  "APPLE_CERTIFICATE",
+  "APPLE_CERTIFICATE_PASSWORD",
+  "APPLE_SIGNING_IDENTITY",
+  "APPLE_ID",
+  "APPLE_PASSWORD",
+  "APPLE_TEAM_ID",
+];
+/** Exact SignPath action pin (v2 line documented as commit SHA). */
+export const REQUIRED_SIGNPATH_ACTION_SHA =
+  "b9d91eadd323de506c0c81cf0c7fe7438f3360fd";
+export const REQUIRED_SIGNPATH_ACTION = `signpath/github-action-submit-signing-request@${REQUIRED_SIGNPATH_ACTION_SHA}`;
+/** Protected SignPath secret identifiers required in Windows job + policy. */
+export const REQUIRED_SIGNPATH_SECRET_NAMES = [
+  "SIGNPATH_API_TOKEN",
+  "SIGNPATH_ORGANIZATION_ID",
+  "SIGNPATH_PROJECT_SLUG",
+  "SIGNPATH_SIGNING_POLICY_SLUG",
+  "SIGNPATH_ARTIFACT_CONFIGURATION_SLUG",
+];
 
 /** Required GitHub-hosted runners (exact). */
 export const REQUIRED_CI_RUNNERS = ["macos-14", "windows-2025", "ubuntu-24.04"];
@@ -641,15 +673,1059 @@ export function checkRustToolchainActionWithBlock(yml) {
   return errors;
 }
 
+/** Leading whitespace width (tabs → 2 spaces). */
+export function yamlLineIndent(line) {
+  const m = line.match(/^[ \t]*/);
+  if (!m) return 0;
+  return m[0].replace(/\t/g, "  ").length;
+}
+
+/**
+ * Extract mapping block for a top-level key (`on:`, `permissions:`, `jobs:`).
+ * Supports both nested blocks and single-line forms (`permissions: write-all`).
+ * @param {string} text
+ * @param {string} key
+ * @returns {string|null}
+ */
+export function extractTopLevelYamlBlock(text, key) {
+  const lines = text.replace(/\r\n/g, "\n").split("\n");
+  const keyOnly = new RegExp(`^([ \\t]*)${key}:\\s*(?:#.*)?$`);
+  const keyInline = new RegExp(`^([ \\t]*)${key}:\\s+(.+)$`);
+  let start = -1;
+  let baseIndent = 0;
+  let inlineValue = null;
+  for (let i = 0; i < lines.length; i++) {
+    const only = lines[i].match(keyOnly);
+    if (only && yamlLineIndent(lines[i]) === 0) {
+      start = i;
+      baseIndent = 0;
+      break;
+    }
+    const inl = lines[i].match(keyInline);
+    if (inl && yamlLineIndent(lines[i]) === 0) {
+      return String(inl[2]).trim();
+    }
+  }
+  if (start < 0) return null;
+  const out = [];
+  for (let i = start + 1; i < lines.length; i++) {
+    const line = lines[i];
+    if (line.trim() === "" || line.trim().startsWith("#")) {
+      out.push(line);
+      continue;
+    }
+    const ind = yamlLineIndent(line);
+    if (ind <= baseIndent) break;
+    out.push(line);
+  }
+  return out.join("\n");
+}
+
+/**
+ * Extract job name → full job body (including nested steps) under `jobs:`.
+ * Always returns Record<string, string> (job body text).
+ * @param {string} yml
+ * @returns {Record<string, string>}
+ */
+export function extractWorkflowJobs(yml) {
+  const text = yml.replace(/\r\n/g, "\n");
+  const lines = text.split("\n");
+  let jobsLine = -1;
+  let jobsIndent = 0;
+  for (let i = 0; i < lines.length; i++) {
+    if (/^([ \t]*)jobs:\s*(?:#.*)?$/.test(lines[i])) {
+      jobsLine = i;
+      jobsIndent = yamlLineIndent(lines[i]);
+      break;
+    }
+  }
+  /** @type {Record<string, string>} */
+  const result = {};
+  if (jobsLine < 0) return result;
+
+  let jobName = /** @type {string|null} */ (null);
+  let jobKeyIndent = /** @type {number|null} */ (null);
+  /** @type {string[]} */
+  let buf = [];
+
+  const flush = () => {
+    if (jobName != null) {
+      result[jobName] = buf.join("\n");
+    }
+    buf = [];
+  };
+
+  for (let i = jobsLine + 1; i < lines.length; i++) {
+    const line = lines[i];
+    if (line.trim() === "" || line.trim().startsWith("#")) {
+      if (jobName != null) buf.push(line);
+      continue;
+    }
+    const ind = yamlLineIndent(line);
+    if (ind <= jobsIndent) break;
+
+    const keyMatch = line.match(/^([ \t]+)([A-Za-z_][\w-]*)\s*:\s*(?:#.*)?$/);
+    if (keyMatch) {
+      const kid = yamlLineIndent(line);
+      if (jobKeyIndent === null) jobKeyIndent = kid;
+      if (kid === jobKeyIndent) {
+        flush();
+        jobName = keyMatch[2];
+        buf = [];
+        continue;
+      }
+    }
+    if (jobName != null) buf.push(line);
+  }
+  flush();
+  return result;
+}
+
+/**
+ * Ordered step blobs inside a job body (each `- ` list item under `steps:`).
+ * @param {string} jobBody
+ * @returns {string[]}
+ */
+export function extractJobSteps(jobBody) {
+  const lines = String(jobBody).replace(/\r\n/g, "\n").split("\n");
+  let stepsIndent = null;
+  let itemIndent = null;
+  /** @type {string[]} */
+  const steps = [];
+  /** @type {string[]} */
+  let cur = [];
+
+  const flush = () => {
+    if (cur.length) steps.push(cur.join("\n"));
+    cur = [];
+  };
+
+  let inSteps = false;
+  for (const line of lines) {
+    if (!inSteps) {
+      if (/^([ \t]*)steps:\s*(?:#.*)?$/.test(line)) {
+        inSteps = true;
+        stepsIndent = yamlLineIndent(line);
+      }
+      continue;
+    }
+    if (line.trim() === "" || line.trim().startsWith("#")) {
+      if (cur.length) cur.push(line);
+      continue;
+    }
+    const ind = yamlLineIndent(line);
+    if (ind <= /** @type {number} */ (stepsIndent)) break;
+    if (/^[ \t]+-\s+/.test(line)) {
+      if (itemIndent === null) itemIndent = ind;
+      if (ind === itemIndent) {
+        flush();
+        cur.push(line);
+        continue;
+      }
+    }
+    if (cur.length) cur.push(line);
+  }
+  flush();
+  return steps;
+}
+
+/**
+ * @param {string} body
+ * @param {string} name
+ * @returns {boolean}
+ */
+function jobHasEnvironment(body, name) {
+  return new RegExp(
+    `^\\s*environment:\\s*['"]?${name}['"]?\\s*(?:#.*)?$`,
+    "m",
+  ).test(body);
+}
+
+/**
+ * Secret reference: secrets.NAME or secrets['NAME'].
+ * @param {string} body
+ * @param {string} name
+ */
+function bodyRefsSecret(body, name) {
+  return new RegExp(
+    `secrets\\.${name}\\b|secrets\\[['\\"]${name}['\\"]\\]`,
+  ).test(body);
+}
+
+/**
+ * Dot or bracket secret expressions (both quote styles), with or without ${{ }}.
+ * @param {string} line
+ * @returns {boolean}
+ */
+export function lineHasSecretExpression(line) {
+  const s = String(line);
+  return (
+    /\$\{\{\s*secrets\s*\.\s*[A-Za-z_][\w]*\s*\}\}/.test(s) ||
+    /\$\{\{\s*secrets\s*\[\s*['"][^'"]+['"]\s*\]\s*\}\}/.test(s) ||
+    /(?:^|[^.\w])secrets\s*\.\s*[A-Za-z_][\w]*/.test(s) ||
+    /secrets\s*\[\s*['"][^'"]+['"]\s*\]/.test(s)
+  );
+}
+
+/**
+ * True if any `run:` / shell multiline script contains secrets expressions.
+ * Detects secrets.NAME and secrets['NAME'] / secrets["NAME"] in inline and block runs.
+ * @param {string} body
+ */
+export function runScriptsContainSecrets(body) {
+  const lines = String(body).replace(/\r\n/g, "\n").split("\n");
+  let inRun = false;
+  let runIndent = 0;
+  for (const line of lines) {
+    // Match `run:` or list item `- run:`
+    const runMatch = line.match(/^([ \t]*)(?:-\s+)?run:\s*(.*)$/);
+    if (runMatch && /(^|\s)run:/.test(line)) {
+      const ind = yamlLineIndent(line);
+      const rest = runMatch[2].trim();
+      if (rest === "|" || rest === ">") {
+        inRun = true;
+        runIndent = ind;
+        continue;
+      }
+      // single-line run:
+      if (lineHasSecretExpression(rest)) return true;
+      inRun = false;
+      continue;
+    }
+    if (inRun) {
+      const ind = yamlLineIndent(line);
+      if (line.trim() && ind <= runIndent) {
+        inRun = false;
+      } else if (lineHasSecretExpression(line)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+/**
+ * Parse job-level `permissions:` mapping only (not script text).
+ * @param {string} jobBody
+ * @returns {Record<string, string>|null} null if no permissions key
+ */
+export function extractJobPermissionsMap(jobBody) {
+  const lines = String(jobBody).replace(/\r\n/g, "\n").split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    const inline = lines[i].match(
+      /^([ \t]+)permissions:\s+(\S+)\s*(?:#.*)?$/,
+    );
+    if (inline) {
+      return { _inline: inline[2] };
+    }
+    const block = lines[i].match(/^([ \t]+)permissions:\s*(?:#.*)?$/);
+    if (!block) continue;
+    const base = yamlLineIndent(lines[i]);
+    /** @type {Record<string, string>} */
+    const map = {};
+    for (let j = i + 1; j < lines.length; j++) {
+      const line = lines[j];
+      if (line.trim() === "" || line.trim().startsWith("#")) continue;
+      const ind = yamlLineIndent(line);
+      if (ind <= base) break;
+      const kv = line.match(/^[ \t]+([A-Za-z_]+):\s*(\S+)\s*(?:#.*)?$/);
+      if (kv && ind > base && ind <= base + 4) {
+        map[kv[1]] = kv[2].replace(/['"]/g, "");
+      }
+    }
+    return map;
+  }
+  return null;
+}
+
+/**
+ * Parse `output-artifact-directory` from a SignPath step blob.
+ * @param {string} step
+ * @returns {string|null}
+ */
+export function parseSignPathOutputArtifactDirectory(step) {
+  const m = String(step).match(
+    /^\s*output-artifact-directory:\s*['"]?([^\s'"#]+)/m,
+  );
+  return m ? m[1].replace(/\/+$/, "") : null;
+}
+
+/**
+ * Real SHA-256 command (not mere echo of the word SHA256SUMS).
+ * @param {string} step
+ * @returns {boolean}
+ */
+export function isRealSha256Command(step) {
+  const s = String(step);
+  return (
+    /\bsha256sum\b/.test(s) ||
+    /\bshasum\s+-a\s+256\b/.test(s) ||
+    /\bGet-FileHash\b[\s\S]*\bSHA256\b/i.test(s) ||
+    /\bGet-FileHash\b[\s\S]*-Algorithm\s+SHA256\b/i.test(s)
+  );
+}
+
+/**
+ * @param {string} jobBody
+ * @returns {boolean}
+ */
+function jobPermissionsContentsWrite(jobBody) {
+  const map = extractJobPermissionsMap(jobBody);
+  if (!map) return false;
+  if (map._inline === "write-all") return true;
+  return map.contents === "write";
+}
+
+/**
+ * Job-level env mapping of NAME: ${{ secrets.NAME }} for Apple secrets.
+ * @param {string} jobBody
+ * @param {string} secretName
+ */
+function jobEnvMapsSecret(jobBody, secretName) {
+  // env: block then KEY: ${{ secrets.SECRET }}
+  // Accept either env key matching secret name or any mapping to secrets.SECRET
+  const re = new RegExp(
+    `^\\s*(?:${secretName}|[A-Z0-9_]+):\\s*\\$\\{\\{\\s*secrets\\.${secretName}\\s*\\}\\}`,
+    "m",
+  );
+  // Only count under env: or step env: — reject run: lines already via runScriptsContainSecrets
+  // Structural: line with secrets.X that is not under a run block
+  if (!bodyRefsSecret(jobBody, secretName)) return false;
+  if (runScriptsContainSecrets(jobBody) && /run:[\s\S]*secrets\./.test(jobBody)) {
+    // still allow if also mapped in env — require env mapping specifically
+  }
+  // Require a non-run mapping line
+  const lines = jobBody.replace(/\r\n/g, "\n").split("\n");
+  let inRun = false;
+  let runIndent = 0;
+  for (const line of lines) {
+    const runMatch = line.match(/^([ \t]+)run:\s*(.*)$/);
+    if (runMatch) {
+      const rest = runMatch[2].trim();
+      if (rest === "|" || rest === ">") {
+        inRun = true;
+        runIndent = yamlLineIndent(line);
+        continue;
+      }
+      inRun = false;
+      continue;
+    }
+    if (inRun) {
+      if (line.trim() && yamlLineIndent(line) <= runIndent) inRun = false;
+      else continue;
+    }
+    if (
+      new RegExp(
+        `^\\s*\\w+:\\s*\\$\\{\\{\\s*secrets\\.${secretName}\\s*\\}\\}`,
+      ).test(line)
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Final artifact names (exact lineage).
+ */
+export const ARTIFACT_MACOS = "opsmate-macos-signed-notarized";
+export const ARTIFACT_WINDOWS = "opsmate-windows-signed";
+export const ARTIFACT_LINUX = "opsmate-linux-release";
+
+/**
+ * Pure content validator for desktop-release.yml (Task 8 signed release).
+ * @param {string} yml
+ * @returns {string[]}
+ */
+export function checkDesktopReleaseWorkflowContent(yml) {
+  const errors = [];
+  const text = yml.replace(/\r\n/g, "\n");
+
+  // --- on: push + desktop-v* only; reject other event keys ---
+  const onBlock = extractTopLevelYamlBlock(text, "on");
+  if (!onBlock) {
+    errors.push("desktop-release.yml must declare on: trigger block");
+  } else {
+    const hasPush = /^\s*push\s*:/m.test(onBlock);
+    const hasTag =
+      /tags:\s*\n(?:[ \t]+-[ \t]*['"]?)desktop-v\*/.test(onBlock) ||
+      /['"]desktop-v\*['"]/.test(onBlock);
+    if (!hasPush || !hasTag) {
+      errors.push(
+        `desktop-release.yml on: must include push with tags ${REQUIRED_RELEASE_TAG_PATTERN}`,
+      );
+    }
+    // First-level event keys under on:
+    const eventKeys = [];
+    const onLines = onBlock.split("\n");
+    let base = null;
+    for (const line of onLines) {
+      if (!line.trim() || line.trim().startsWith("#")) continue;
+      const ind = yamlLineIndent(line);
+      if (base === null) base = ind;
+      const m = line.match(/^([ \t]+)([A-Za-z_]+)\s*:/);
+      if (m && yamlLineIndent(line) === base) {
+        eventKeys.push(m[2]);
+      }
+    }
+    const allowed = new Set(["push"]);
+    for (const k of eventKeys) {
+      if (!allowed.has(k)) {
+        errors.push(
+          `desktop-release.yml on: must not include event '${k}' (tag push only)`,
+        );
+      }
+    }
+    if (/^\s*branches\s*:/m.test(onBlock)) {
+      errors.push(
+        "desktop-release.yml must not trigger on branches (tag desktop-v* only)",
+      );
+    }
+  }
+
+  // Top-level permissions read-only
+  const topPerms = extractTopLevelYamlBlock(text, "permissions");
+  if (!topPerms) {
+    errors.push(
+      "desktop-release.yml must declare top-level permissions (contents/actions read)",
+    );
+  } else {
+    if (/write-all/.test(topPerms)) {
+      errors.push("desktop-release.yml must not use permissions: write-all");
+    }
+    if (!/contents:\s*read/.test(topPerms)) {
+      errors.push(
+        "desktop-release.yml top-level permissions must set contents: read",
+      );
+    }
+    if (!/actions:\s*read/.test(topPerms)) {
+      errors.push(
+        "desktop-release.yml top-level permissions must set actions: read",
+      );
+    }
+    if (/contents:\s*write/.test(topPerms)) {
+      errors.push(
+        "desktop-release.yml top-level permissions must not set contents: write (release job only)",
+      );
+    }
+  }
+
+  if (/continue-on-error\s*:\s*true/i.test(text)) {
+    errors.push(
+      "desktop-release.yml must not set continue-on-error: true anywhere",
+    );
+  }
+
+  const jobs = extractWorkflowJobs(text);
+  for (const name of ["macos", "windows", "linux", "release"]) {
+    if (typeof jobs[name] !== "string") {
+      errors.push(`desktop-release.yml must define job '${name}'`);
+    }
+  }
+  if (
+    typeof jobs.macos !== "string" ||
+    typeof jobs.windows !== "string" ||
+    typeof jobs.linux !== "string" ||
+    typeof jobs.release !== "string"
+  ) {
+    return errors;
+  }
+
+  for (const name of ["macos", "windows", "release"]) {
+    if (!jobHasEnvironment(jobs[name], REQUIRED_RELEASE_ENVIRONMENT)) {
+      errors.push(
+        `desktop-release.yml job '${name}' must set environment: ${REQUIRED_RELEASE_ENVIRONMENT}`,
+      );
+    }
+  }
+
+  // Permissions: only release job mapping may have contents: write
+  if (!jobPermissionsContentsWrite(jobs.release)) {
+    errors.push(
+      "desktop-release.yml job 'release' must set permissions mapping contents: write",
+    );
+  }
+  for (const name of ["macos", "windows", "linux"]) {
+    if (jobPermissionsContentsWrite(jobs[name])) {
+      errors.push(
+        `desktop-release.yml job '${name}' must not set permissions contents: write`,
+      );
+    }
+  }
+
+  // No secrets in any run: scripts
+  for (const [name, body] of Object.entries(jobs)) {
+    if (runScriptsContainSecrets(body)) {
+      errors.push(
+        `desktop-release.yml job '${name}' must not use secrets expressions inside run: scripts (use env mappings)`,
+      );
+    }
+  }
+
+  // macOS: Apple secrets via env mappings; universal; codesign; spctl; stapler validate; optional APPLE_ID on build
+  for (const sec of REQUIRED_APPLE_SECRET_NAMES) {
+    if (!jobEnvMapsSecret(jobs.macos, sec)) {
+      errors.push(
+        `desktop-release.yml job 'macos' must map secrets.${sec} through job/step env (not run scripts)`,
+      );
+    }
+    for (const other of ["windows", "linux", "release"]) {
+      if (bodyRefsSecret(jobs[other], sec)) {
+        errors.push(
+          `desktop-release.yml job '${other}' must not reference Apple secret ${sec}`,
+        );
+      }
+    }
+  }
+  if (
+    !/universal-apple-darwin/.test(jobs.macos) &&
+    !/--target\s+universal-apple-darwin/.test(jobs.macos)
+  ) {
+    errors.push(
+      "desktop-release.yml job 'macos' must build universal-apple-darwin",
+    );
+  }
+  if (!/\bcodesign\b/.test(jobs.macos)) {
+    errors.push(
+      "desktop-release.yml job 'macos' must run codesign verification",
+    );
+  }
+  if (!/\bspctl\b/.test(jobs.macos)) {
+    errors.push(
+      "desktop-release.yml job 'macos' must run spctl Gatekeeper assessment",
+    );
+  }
+  // Notarization evidence: APPLE_ID/PASSWORD/TEAM_ID on build and/or stapler validate
+  const hasAppleIdEnv =
+    jobEnvMapsSecret(jobs.macos, "APPLE_ID") &&
+    jobEnvMapsSecret(jobs.macos, "APPLE_PASSWORD") &&
+    jobEnvMapsSecret(jobs.macos, "APPLE_TEAM_ID");
+  if (!hasAppleIdEnv) {
+    errors.push(
+      "desktop-release.yml job 'macos' must map APPLE_ID, APPLE_PASSWORD, APPLE_TEAM_ID for notarization evidence",
+    );
+  }
+  if (!/stapler\s+validate|\bstapler\b.*validate|xcrun\s+stapler\s+validate/i.test(
+    jobs.macos,
+  )) {
+    errors.push(
+      "desktop-release.yml job 'macos' must run xcrun stapler validate",
+    );
+  }
+
+  // macOS: ordered codesign → spctl → stapler validate → final upload
+  const macSteps = extractJobSteps(jobs.macos);
+  let codesignIdx = -1;
+  let spctlIdx = -1;
+  let staplerIdx = -1;
+  let macUploadIdx = -1;
+  for (let i = 0; i < macSteps.length; i++) {
+    if (/\bcodesign\b/.test(macSteps[i])) codesignIdx = i;
+    if (/\bspctl\b/.test(macSteps[i])) spctlIdx = i;
+    if (/stapler\s+validate/i.test(macSteps[i])) staplerIdx = i;
+    if (
+      /actions\/upload-artifact@/.test(macSteps[i]) &&
+      macSteps[i].includes(ARTIFACT_MACOS)
+    ) {
+      macUploadIdx = i;
+    }
+  }
+  if (codesignIdx < 0 || spctlIdx < 0 || staplerIdx < 0) {
+    errors.push(
+      "desktop-release.yml job 'macos' must run codesign, spctl, and stapler validate as steps (not comments)",
+    );
+  } else if (
+    !(codesignIdx < spctlIdx && spctlIdx < staplerIdx)
+  ) {
+    errors.push(
+      "desktop-release.yml job 'macos' must order codesign then spctl then stapler validate",
+    );
+  }
+  if (macUploadIdx < 0) {
+    errors.push(
+      `desktop-release.yml job 'macos' must upload-artifact name ${ARTIFACT_MACOS}`,
+    );
+  } else if (staplerIdx < 0 || macUploadIdx <= staplerIdx) {
+    errors.push(
+      `desktop-release.yml job 'macos' must upload ${ARTIFACT_MACOS} only after codesign/spctl/stapler validate`,
+    );
+  }
+
+  // Windows pipeline
+  const win = jobs.windows;
+  const winSteps = extractJobSteps(win);
+  if (!/nsis/i.test(win)) {
+    errors.push("desktop-release.yml job 'windows' must build NSIS bundle");
+  }
+
+  let unsignedIdx = -1;
+  let unsignedId = null;
+  let signpathIdx = -1;
+  let authIdx = -1;
+  let winFinalUpload = -1;
+  /** @type {string|null} */
+  let signpathOutDir = null;
+
+  for (let i = 0; i < winSteps.length; i++) {
+    const s = winSteps[i];
+    if (
+      /actions\/upload-artifact@/.test(s) &&
+      /unsigned/i.test(s) &&
+      /nsis/i.test(s)
+    ) {
+      unsignedIdx = i;
+      const idm = s.match(/^\s*id:\s*([A-Za-z_][\w-]*)/m);
+      if (idm) unsignedId = idm[1];
+    }
+    if (s.includes(REQUIRED_SIGNPATH_ACTION)) {
+      signpathIdx = i;
+      signpathOutDir = parseSignPathOutputArtifactDirectory(s);
+    }
+    if (/Get-AuthenticodeSignature/i.test(s)) {
+      authIdx = i;
+    }
+    if (
+      /actions\/upload-artifact@/.test(s) &&
+      s.includes(ARTIFACT_WINDOWS)
+    ) {
+      winFinalUpload = i;
+    }
+  }
+
+  if (unsignedIdx < 0) {
+    errors.push(
+      "desktop-release.yml job 'windows' must upload-artifact unsigned NSIS before SignPath",
+    );
+  } else if (!unsignedId) {
+    errors.push(
+      "desktop-release.yml unsigned NSIS upload step must set id: for artifact-id output",
+    );
+  }
+
+  if (signpathIdx < 0) {
+    errors.push(
+      `desktop-release.yml job 'windows' must use exact pinned ${REQUIRED_SIGNPATH_ACTION}`,
+    );
+  } else {
+    const around = winSteps
+      .slice(Math.max(0, signpathIdx - 1), signpathIdx + 2)
+      .join("\n");
+    if (!/\bv2\b/.test(around)) {
+      errors.push(
+        "desktop-release.yml SignPath step must have a nearby v2 documentation comment",
+      );
+    }
+    if (unsignedIdx < 0 || unsignedIdx >= signpathIdx) {
+      errors.push(
+        "desktop-release.yml job 'windows' must upload unsigned NSIS before SignPath action",
+      );
+    }
+    const sp = winSteps[signpathIdx];
+    for (const sec of REQUIRED_SIGNPATH_SECRET_NAMES) {
+      if (!bodyRefsSecret(sp, sec)) {
+        errors.push(
+          `desktop-release.yml SignPath step must map secrets.${sec} on the action step itself`,
+        );
+      }
+    }
+    if (!/wait-for-completion:\s*true/i.test(sp)) {
+      errors.push(
+        "desktop-release.yml SignPath step must set wait-for-completion: true",
+      );
+    }
+    if (!signpathOutDir) {
+      errors.push(
+        "desktop-release.yml SignPath step must set output-artifact-directory",
+      );
+    }
+    if (unsignedId) {
+      const expectRef = new RegExp(
+        `github-artifact-id:\\s*\\$\\{\\{\\s*steps\\.${unsignedId}\\.outputs\\.artifact-id\\s*\\}\\}`,
+      );
+      if (!expectRef.test(sp)) {
+        errors.push(
+          `desktop-release.yml SignPath github-artifact-id must be steps.${unsignedId}.outputs.artifact-id`,
+        );
+      }
+    } else if (!/github-artifact-id:/i.test(sp)) {
+      errors.push(
+        "desktop-release.yml SignPath step must set github-artifact-id",
+      );
+    }
+  }
+
+  // Authenticode after SignPath: inspect exe under SignPath output dir; fail-closed Status -ne Valid
+  if (authIdx < 0) {
+    errors.push(
+      "desktop-release.yml job 'windows' must run Get-AuthenticodeSignature after SignPath",
+    );
+  } else {
+    if (signpathIdx >= 0 && authIdx <= signpathIdx) {
+      errors.push(
+        "desktop-release.yml Get-AuthenticodeSignature step must run after SignPath",
+      );
+    }
+    const a = winSteps[authIdx];
+    if (!/Get-AuthenticodeSignature/i.test(a)) {
+      errors.push(
+        "desktop-release.yml Authenticode step must call Get-AuthenticodeSignature",
+      );
+    }
+    if (signpathOutDir && !a.includes(signpathOutDir)) {
+      errors.push(
+        `desktop-release.yml Authenticode step must inspect files under SignPath output-artifact-directory '${signpathOutDir}'`,
+      );
+    }
+    const failClosed =
+      (/Status\s*-ne\s*['"]Valid['"]/i.test(a) ||
+        /\.Status\s*-ne\s*['"]Valid['"]/i.test(a)) &&
+      (/throw\b|exit\s+1|Environment\.Exit|Write-Error/i.test(a));
+    if (!failClosed) {
+      errors.push(
+        "desktop-release.yml Authenticode step must fail-closed with Status -ne 'Valid' (throw/exit)",
+      );
+    }
+  }
+
+  if (winFinalUpload < 0) {
+    errors.push(
+      `desktop-release.yml job 'windows' must upload-artifact name ${ARTIFACT_WINDOWS} after Authenticode`,
+    );
+  } else if (authIdx >= 0 && winFinalUpload <= authIdx) {
+    errors.push(
+      `desktop-release.yml job 'windows' must upload ${ARTIFACT_WINDOWS} only after Authenticode verification`,
+    );
+  } else if (signpathOutDir) {
+    const up = winSteps[winFinalUpload];
+    const pathM = up.match(/^\s*path:\s*['"]?([^\s'"#]+)/m);
+    const upPath = pathM ? pathM[1].replace(/\/+$/, "") : "";
+    if (upPath !== signpathOutDir && upPath !== `${signpathOutDir}/`) {
+      // allow path: signed-out or signed-out/
+      if (
+        !upPath.startsWith(`${signpathOutDir}/`) &&
+        upPath !== signpathOutDir
+      ) {
+        errors.push(
+          `desktop-release.yml ${ARTIFACT_WINDOWS} upload path must be SignPath output-artifact-directory '${signpathOutDir}'`,
+        );
+      }
+    }
+  }
+
+  // Linux
+  if (!/appimage/i.test(jobs.linux)) {
+    errors.push("desktop-release.yml job 'linux' must build AppImage");
+  }
+  if (!/\bdeb\b/i.test(jobs.linux)) {
+    errors.push("desktop-release.yml job 'linux' must build deb");
+  }
+  const linSteps = extractJobSteps(jobs.linux);
+  let linBuild = -1;
+  let linUpload = -1;
+  for (let i = 0; i < linSteps.length; i++) {
+    if (/appimage|\bdeb\b|tauri.*build/i.test(linSteps[i])) linBuild = i;
+    if (
+      /actions\/upload-artifact@/.test(linSteps[i]) &&
+      linSteps[i].includes(ARTIFACT_LINUX)
+    ) {
+      linUpload = i;
+    }
+  }
+  if (linUpload < 0) {
+    errors.push(
+      `desktop-release.yml job 'linux' must upload-artifact name ${ARTIFACT_LINUX}`,
+    );
+  } else if (linBuild >= 0 && linUpload < linBuild) {
+    errors.push(
+      `desktop-release.yml job 'linux' must upload ${ARTIFACT_LINUX} after build`,
+    );
+  }
+
+  // Release job lineage
+  const rel = jobs.release;
+  const needsLine = rel.match(/^\s*needs:\s*\[([^\]]+)\]/m);
+  const needsBlock = rel.match(/^\s*needs:\s*\n((?:[ \t]+-[ \t]*.+\n?)+)/m);
+  /** @type {Set<string>} */
+  const needNames = new Set();
+  if (needsLine) {
+    for (const p of needsLine[1].split(",")) {
+      needNames.add(p.trim().replace(/['"]/g, ""));
+    }
+  } else if (needsBlock) {
+    for (const line of needsBlock[1].split("\n")) {
+      const m = line.match(/^\s*-\s*([A-Za-z_][\w-]*)/);
+      if (m) needNames.add(m[1]);
+    }
+  } else {
+    errors.push(
+      "desktop-release.yml job 'release' must declare needs: [macos, windows, linux]",
+    );
+  }
+  for (const n of ["macos", "windows", "linux"]) {
+    if (!needNames.has(n)) {
+      errors.push(
+        `desktop-release.yml job 'release' needs: must include '${n}'`,
+      );
+    }
+  }
+
+  const relSteps = extractJobSteps(rel);
+  const downloads = new Set();
+  let stageIdx = -1;
+  let shaIdx = -1;
+  let pubIdx = -1;
+  const oneLevelGlobRe = new RegExp(
+    `(${ARTIFACT_MACOS}|${ARTIFACT_WINDOWS}|${ARTIFACT_LINUX})/\\*`,
+  );
+
+  for (let i = 0; i < relSteps.length; i++) {
+    const s = relSteps[i];
+    if (/actions\/download-artifact@/.test(s)) {
+      for (const name of [ARTIFACT_MACOS, ARTIFACT_WINDOWS, ARTIFACT_LINUX]) {
+        if (s.includes(name)) downloads.add(name);
+      }
+    }
+    // Recursive flatten staging: find -type f + release-assets + all three roots + collision.
+    if (
+      /\bfind\b/.test(s) &&
+      /-type\s+f/.test(s) &&
+      /release-assets/.test(s) &&
+      ARTIFACT_MACOS &&
+      s.includes(ARTIFACT_MACOS) &&
+      s.includes(ARTIFACT_WINDOWS) &&
+      s.includes(ARTIFACT_LINUX) &&
+      (/collision/i.test(s) ||
+        /already staged/i.test(s) ||
+        /\[\[\s*-e\s+/.test(s) ||
+        /\[\s+-e\s+/.test(s) ||
+        /test\s+!-e|test\s+! -e|\[\[ ! -e/.test(s) ||
+        /-e\s+"\$\{?dest/.test(s))
+    ) {
+      stageIdx = i;
+    }
+    if (isRealSha256Command(s) && /SHA256SUMS/.test(s)) {
+      shaIdx = i;
+    }
+    if (/gh\s+release\s+create/i.test(s)) pubIdx = i;
+  }
+  for (const name of [ARTIFACT_MACOS, ARTIFACT_WINDOWS, ARTIFACT_LINUX]) {
+    if (!downloads.has(name)) {
+      errors.push(
+        `desktop-release.yml job 'release' must download-artifact ${name} before checksum`,
+      );
+    }
+  }
+  const lastDl = Math.max(
+    -1,
+    ...relSteps.map((s, i) =>
+      /actions\/download-artifact@/.test(s) ? i : -1,
+    ),
+  );
+
+  // Reject unsafe one-level platform globs on checksum/publish (dirs break Linux nested trees).
+  for (let i = 0; i < relSteps.length; i++) {
+    const s = relSteps[i];
+    if (
+      (isRealSha256Command(s) || /gh\s+release\s+create/i.test(s)) &&
+      oneLevelGlobRe.test(s)
+    ) {
+      errors.push(
+        "desktop-release.yml must not use one-level artifact globs (e.g. opsmate-linux-release/*) for checksum/publish; stage recursive regular files first",
+      );
+    }
+  }
+
+  if (stageIdx < 0) {
+    errors.push(
+      "desktop-release.yml job 'release' must stage recursive regular files from all three artifact roots into release-assets with collision detection (find -type f)",
+    );
+  } else if (lastDl >= 0 && stageIdx < lastDl) {
+    errors.push(
+      "desktop-release.yml job 'release' must download all artifacts before recursive staging",
+    );
+  }
+
+  if (shaIdx < 0) {
+    errors.push(
+      "desktop-release.yml job 'release' must run a real SHA-256 command (sha256sum|shasum -a 256|Get-FileHash SHA256) writing SHA256SUMS over staged release-assets files",
+    );
+  } else {
+    const shaStep = relSteps[shaIdx];
+    if (stageIdx >= 0 && shaIdx < stageIdx) {
+      errors.push(
+        "desktop-release.yml job 'release' must stage release-assets before SHA256SUMS",
+      );
+    }
+    if (!/release-assets/.test(shaStep)) {
+      errors.push(
+        "desktop-release.yml SHA256SUMS step must hash files under release-assets (not one-level platform globs)",
+      );
+    }
+    if (!/>\s*SHA256SUMS|Out-File\s+.*SHA256SUMS|Set-Content\s+.*SHA256SUMS|Tee-Object\s+.*SHA256SUMS/i.test(
+      shaStep,
+    )) {
+      errors.push(
+        "desktop-release.yml SHA step must write output to SHA256SUMS",
+      );
+    }
+  }
+  if (pubIdx < 0) {
+    errors.push(
+      "desktop-release.yml job 'release' must publish with gh release create after checksum",
+    );
+  } else if (shaIdx >= 0 && pubIdx < shaIdx) {
+    errors.push(
+      "desktop-release.yml job 'release' must compute SHA256SUMS before gh release create",
+    );
+  } else if (pubIdx >= 0) {
+    const pub = relSteps[pubIdx];
+    const afterCreate = pub.slice(pub.search(/gh\s+release\s+create/i));
+    // Must publish staged files: release-assets path on create cmdline and/or ${files[@]} fed by find release-assets.
+    const publishesStaged =
+      (/files\[@\]/.test(afterCreate) && /find\s+release-assets/.test(pub)) ||
+      /release-assets\//.test(afterCreate) ||
+      /release-assets\/\*/.test(afterCreate);
+    if (!publishesStaged) {
+      errors.push(
+        "desktop-release.yml gh release create must publish staged release-assets regular files (not platform directory globs)",
+      );
+    }
+    if (!/\bSHA256SUMS\b/.test(afterCreate)) {
+      errors.push(
+        "desktop-release.yml gh release create must include SHA256SUMS",
+      );
+    }
+    // Checksum-only release (SHA256SUMS without staged assets) is forbidden.
+    if (
+      /\bSHA256SUMS\b/.test(afterCreate) &&
+      !publishesStaged
+    ) {
+      errors.push(
+        "desktop-release.yml gh release create must not be checksum-only; include staged release assets",
+      );
+    }
+    if (oneLevelGlobRe.test(afterCreate)) {
+      errors.push(
+        "desktop-release.yml gh release create must not use one-level platform artifact globs",
+      );
+    }
+  }
+  if (/unsigned/i.test(rel)) {
+    errors.push(
+      "desktop-release.yml job 'release' must not reference unsigned artifacts",
+    );
+  }
+
+  if (/REPLACE_ME|YOUR_SECRET|changeme/i.test(text)) {
+    errors.push(
+      "desktop-release.yml must not embed placeholder secret literals",
+    );
+  }
+
+  return errors;
+}
+
+/**
+ * File-backed desktop-release.yml gate.
+ * @returns {string[]}
+ */
+export function checkDesktopReleaseWorkflow() {
+  if (!existsSync(DESKTOP_RELEASE_PATH)) {
+    return [
+      "missing .github/workflows/desktop-release.yml (Task 8 signed release workflow)",
+    ];
+  }
+  return checkDesktopReleaseWorkflowContent(
+    readFileSync(DESKTOP_RELEASE_PATH, "utf8"),
+  );
+}
+
+/**
+ * Pure content validator for SignPath release-signing policy YAML.
+ * @param {string} yml
+ * @returns {string[]}
+ */
+export function checkSignPathReleasePolicyContent(yml) {
+  const errors = [];
+  const text = yml.replace(/\r\n/g, "\n");
+
+  if (!/desktop-v\*/.test(text)) {
+    errors.push(
+      "SignPath policy must record allowed trigger tag pattern desktop-v*",
+    );
+  }
+  if (
+    !new RegExp(
+      `(^|[\\s:'"])${REQUIRED_RELEASE_ENVIRONMENT}([\\s:'"]|$)`,
+    ).test(text)
+  ) {
+    errors.push(
+      `SignPath policy must reference protected environment ${REQUIRED_RELEASE_ENVIRONMENT}`,
+    );
+  }
+  if (!/\bNSIS\b|\bnsis\b/.test(text)) {
+    errors.push("SignPath policy must scope Windows NSIS artifacts");
+  }
+  for (const sec of REQUIRED_SIGNPATH_SECRET_NAMES) {
+    if (!bodyRefsSecret(text, sec)) {
+      errors.push(
+        `SignPath policy must reference secrets.${sec}`,
+      );
+    }
+  }
+  if (!/Authenticode/i.test(text) || !/\bValid\b/.test(text)) {
+    errors.push(
+      "SignPath policy must require Authenticode Valid verification",
+    );
+  }
+  if (!/fail_closed\s*:\s*true/i.test(text)) {
+    errors.push("SignPath policy must set fail_closed: true");
+  }
+  if (/continue-on-error\s*:\s*true/i.test(text)) {
+    errors.push("SignPath policy must not allow continue-on-error: true");
+  }
+  return errors;
+}
+
+/**
+ * File-backed SignPath policy gate.
+ * @returns {string[]}
+ */
+export function checkSignPathReleasePolicy() {
+  if (!existsSync(SIGNPATH_POLICY_PATH)) {
+    return [
+      "missing .signpath/policies/opsmate-desktop/release-signing.yml (Task 8 SignPath policy)",
+    ];
+  }
+  return checkSignPathReleasePolicyContent(
+    readFileSync(SIGNPATH_POLICY_PATH, "utf8"),
+  );
+}
+
+/**
+ * Combined Task 8 release gates (workflow + policy).
+ * Not folded into checkReleaseConfig() so Task 5/6 GREEN stays independent.
+ * @returns {{ ok: boolean, errors: string[] }}
+ */
+export function checkDesktopSignedReleaseConfig() {
+  const errors = [
+    ...checkDesktopReleaseWorkflow(),
+    ...checkSignPathReleasePolicy(),
+  ];
+  return { ok: errors.length === 0, errors };
+}
+
 const isMain =
   process.argv[1] &&
   resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 
 if (isMain) {
   const result = checkReleaseConfig();
-  if (!result.ok) {
+  const release = checkDesktopSignedReleaseConfig();
+  const allErrors = [...result.errors, ...release.errors];
+  if (allErrors.length > 0) {
     console.error("check-release-config FAILED:");
-    for (const e of result.errors) console.error(" -", e);
+    for (const e of allErrors) console.error(" -", e);
     process.exit(1);
   }
   console.log("check-release-config OK");

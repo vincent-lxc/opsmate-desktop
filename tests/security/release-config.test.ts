@@ -10,12 +10,22 @@ import { deflateSync } from "node:zlib";
 import { describe, expect, it } from "vitest";
 import {
   checkDesktopCiWorkflow,
+  checkDesktopReleaseWorkflow,
+  checkDesktopReleaseWorkflowContent,
+  checkDesktopSignedReleaseConfig,
   checkGitAttributesLfContent,
   checkReleaseConfig,
   checkRustToolchainActionWithBlock,
+  checkSignPathReleasePolicy,
+  checkSignPathReleasePolicyContent,
   decodePngRgba,
   isPlaceholderPng,
   requiredGitAttributesRules,
+  ARTIFACT_LINUX,
+  ARTIFACT_MACOS,
+  ARTIFACT_WINDOWS,
+  DESKTOP_RELEASE_PATH,
+  REQUIRED_APPLE_SECRET_NAMES,
   REQUIRED_ARTIFACT_TOKEN,
   REQUIRED_CI_RUNNERS,
   REQUIRED_CSP,
@@ -25,12 +35,23 @@ import {
   REQUIRED_LF_PATHS,
   REQUIRED_LINUX_TAURI_CMD,
   REQUIRED_MAC_TAURI_CMD,
+  REQUIRED_RELEASE_ENVIRONMENT,
+  REQUIRED_RELEASE_TAG_PATTERN,
   REQUIRED_RUST_TOOLCHAIN_ACTION,
   REQUIRED_RUST_VERSION,
   REQUIRED_SCHEMES,
+  REQUIRED_SIGNPATH_ACTION,
+  REQUIRED_SIGNPATH_ACTION_SHA,
+  REQUIRED_SIGNPATH_SECRET_NAMES,
   REQUIRED_TARGETS,
   REQUIRED_WIN_TAURI_CMD,
+  SIGNPATH_POLICY_PATH,
   checkGitAttributesLf,
+  extractWorkflowJobs,
+  isRealSha256Command,
+  lineHasSecretExpression,
+  parseSignPathOutputArtifactDirectory,
+  runScriptsContainSecrets,
 } from "../../scripts/check-release-config.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -704,3 +725,479 @@ updates:
   });
 });
 
+// ─── Task 8A — protected signed-release workflow + SignPath (RED until files land) ─
+
+/** Minimal GREEN skeleton for indentation-aware job checks. */
+function signedReleaseHappyPathYaml(): string {
+  const sha = REQUIRED_SIGNPATH_ACTION_SHA;
+  return `
+on:
+  push:
+    tags:
+      - 'desktop-v*'
+permissions:
+  contents: read
+  actions: read
+jobs:
+  macos:
+    runs-on: macos-14
+    environment: desktop-release
+    env:
+      APPLE_CERTIFICATE: \${{ secrets.APPLE_CERTIFICATE }}
+      APPLE_CERTIFICATE_PASSWORD: \${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+      APPLE_SIGNING_IDENTITY: \${{ secrets.APPLE_SIGNING_IDENTITY }}
+      APPLE_ID: \${{ secrets.APPLE_ID }}
+      APPLE_PASSWORD: \${{ secrets.APPLE_PASSWORD }}
+      APPLE_TEAM_ID: \${{ secrets.APPLE_TEAM_ID }}
+    steps:
+      - run: npm run tauri -- build --target universal-apple-darwin --bundles dmg
+      - run: codesign --verify --deep --strict out.app
+      - run: spctl --assess --type execute out.app
+      - run: xcrun stapler validate out.dmg
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${ARTIFACT_MACOS}
+          path: out.dmg
+  windows:
+    runs-on: windows-2025
+    environment: desktop-release
+    steps:
+      - run: npm run tauri -- build --bundles nsis
+      - name: upload unsigned nsis
+        id: unsigned_nsis
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-unsigned-nsis
+          path: bundle/nsis/*.exe
+      - name: SignPath request
+        # documented pin v2
+        uses: signpath/github-action-submit-signing-request@${sha}
+        with:
+          api-token: \${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: \${{ secrets.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: \${{ secrets.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: \${{ secrets.SIGNPATH_SIGNING_POLICY_SLUG }}
+          artifact-configuration-slug: \${{ secrets.SIGNPATH_ARTIFACT_CONFIGURATION_SLUG }}
+          github-artifact-id: \${{ steps.unsigned_nsis.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: signed-out
+      - run: |
+          $s = Get-AuthenticodeSignature .\\signed-out\\app.exe
+          if ($s.Status -ne 'Valid') { throw 'Authenticode not Valid' }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${ARTIFACT_WINDOWS}
+          path: signed-out/
+  linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: npm run tauri -- build --bundles appimage,deb
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${ARTIFACT_LINUX}
+          path: bundle/
+  release:
+    needs: [macos, windows, linux]
+    runs-on: ubuntu-24.04
+    environment: desktop-release
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${ARTIFACT_MACOS}
+          path: ${ARTIFACT_MACOS}
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${ARTIFACT_WINDOWS}
+          path: ${ARTIFACT_WINDOWS}
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${ARTIFACT_LINUX}
+          path: ${ARTIFACT_LINUX}
+      - run: |
+          set -euo pipefail
+          STAGE_DIR="release-assets"
+          rm -rf "\${STAGE_DIR}"
+          mkdir -p "\${STAGE_DIR}"
+          stage_platform() {
+            local root="\$1"
+            local count=0
+            while IFS= read -r -d '' f; do
+              local base dest
+              base="\$(basename -- "\${f}")"
+              dest="\${STAGE_DIR}/\${base}"
+              if [[ -e "\${dest}" ]]; then
+                echo "collision: \${base} already staged" >&2
+                exit 1
+              fi
+              cp -p -- "\${f}" "\${dest}"
+              count=\$((count + 1))
+            done < <(find "\${root}" -type f -print0 | sort -z)
+            if [[ "\${count}" -lt 1 ]]; then
+              echo "no regular files under \${root}" >&2
+              exit 1
+            fi
+          }
+          stage_platform "${ARTIFACT_MACOS}"
+          stage_platform "${ARTIFACT_WINDOWS}"
+          stage_platform "${ARTIFACT_LINUX}"
+      - run: |
+          set -euo pipefail
+          mapfile -d '' -t files < <(find release-assets -type f -print0 | sort -z)
+          sha256sum -- "\${files[@]}" > SHA256SUMS
+      - run: |
+          set -euo pipefail
+          mapfile -d '' -t files < <(find release-assets -type f -print0 | sort -z)
+          gh release create "\$GITHUB_REF_NAME" --prerelease -- "\${files[@]}" SHA256SUMS
+`;
+}
+
+function signPathHappyPolicy(): string {
+  return `
+allowed_triggers:
+  - tag: desktop-v*
+required_environment: desktop-release
+artifact_scope:
+  - windows-nsis
+protected_secrets:
+  api_token: \${{ secrets.SIGNPATH_API_TOKEN }}
+  organization_id: \${{ secrets.SIGNPATH_ORGANIZATION_ID }}
+  project_slug: \${{ secrets.SIGNPATH_PROJECT_SLUG }}
+  signing_policy_slug: \${{ secrets.SIGNPATH_SIGNING_POLICY_SLUG }}
+  artifact_configuration_slug: \${{ secrets.SIGNPATH_ARTIFACT_CONFIGURATION_SLUG }}
+verification:
+  authenticode: Valid
+  fail_closed: true
+`;
+}
+
+describe("Task 8A desktop signed-release controls", () => {
+  it("exports required release paths, environment, tag pattern, Apple and SignPath secrets", () => {
+    expect(DESKTOP_RELEASE_PATH.replace(/\\/g, "/")).toMatch(
+      /\.github\/workflows\/desktop-release\.yml$/,
+    );
+    expect(SIGNPATH_POLICY_PATH.replace(/\\/g, "/")).toMatch(
+      /\.signpath\/policies\/opsmate-desktop\/release-signing\.yml$/,
+    );
+    expect(REQUIRED_RELEASE_ENVIRONMENT).toBe("desktop-release");
+    expect(REQUIRED_RELEASE_TAG_PATTERN).toBe("desktop-v*");
+    expect(REQUIRED_APPLE_SECRET_NAMES).toHaveLength(6);
+    expect(REQUIRED_SIGNPATH_SECRET_NAMES).toHaveLength(5);
+    expect(REQUIRED_SIGNPATH_ACTION).toContain(REQUIRED_SIGNPATH_ACTION_SHA);
+    expect(ARTIFACT_MACOS).toBe("opsmate-macos-signed-notarized");
+    expect(ARTIFACT_WINDOWS).toBe("opsmate-windows-signed");
+    expect(ARTIFACT_LINUX).toBe("opsmate-linux-release");
+  });
+
+  it("requires desktop-release.yml and SignPath policy present and structurally valid", () => {
+    expect(
+      existsSync(DESKTOP_RELEASE_PATH),
+      "missing .github/workflows/desktop-release.yml",
+    ).toBe(true);
+    expect(
+      existsSync(SIGNPATH_POLICY_PATH),
+      "missing .signpath/policies/opsmate-desktop/release-signing.yml",
+    ).toBe(true);
+    const combined = checkDesktopSignedReleaseConfig();
+    expect(combined.ok, combined.errors.join("\n")).toBe(true);
+  });
+
+  it("extractWorkflowJobs returns Record of string job bodies", () => {
+    const jobs = extractWorkflowJobs(signedReleaseHappyPathYaml());
+    expect(Object.keys(jobs).sort()).toEqual([
+      "linux",
+      "macos",
+      "release",
+      "windows",
+    ]);
+    for (const v of Object.values(jobs)) {
+      expect(typeof v).toBe("string");
+    }
+    expect(jobs.macos).toMatch(/codesign/);
+    expect(jobs.linux).not.toMatch(/codesign/);
+  });
+
+  it("checkDesktopReleaseWorkflowContent accepts structural happy-path skeleton", () => {
+    const errs = checkDesktopReleaseWorkflowContent(signedReleaseHappyPathYaml());
+    expect(errs, errs.join("\n")).toEqual([]);
+  });
+
+  it("rejects secrets inside run scripts (env mapping required)", () => {
+    // Dot and bracket forms, both quote styles, inline + multiline.
+    expect(lineHasSecretExpression("echo ${{ secrets.APPLE_ID }}")).toBe(true);
+    expect(
+      lineHasSecretExpression(`echo \${{ secrets['APPLE_PASSWORD'] }}`),
+    ).toBe(true);
+    expect(
+      lineHasSecretExpression(`echo \${{ secrets["APPLE_TEAM_ID"] }}`),
+    ).toBe(true);
+    expect(lineHasSecretExpression("print(secrets.FOO)")).toBe(true);
+    expect(lineHasSecretExpression(`print(secrets['BAR'])`)).toBe(true);
+    expect(lineHasSecretExpression("echo no secrets here")).toBe(false);
+
+    expect(
+      runScriptsContainSecrets(`
+    steps:
+      - run: echo \${{ secrets.APPLE_CERTIFICATE }}
+`),
+    ).toBe(true);
+    expect(
+      runScriptsContainSecrets(`
+    steps:
+      - run: |
+          echo \${{ secrets['APPLE_CERTIFICATE'] }}
+`),
+    ).toBe(true);
+    expect(
+      runScriptsContainSecrets(`
+    steps:
+      - run: |
+          echo \${{ secrets["APPLE_ID"] }}
+`),
+    ).toBe(true);
+    expect(
+      runScriptsContainSecrets(`
+    env:
+      APPLE_CERTIFICATE: \${{ secrets.APPLE_CERTIFICATE }}
+    steps:
+      - run: codesign --verify out.app
+`),
+    ).toBe(false);
+
+    let yml = signedReleaseHappyPathYaml();
+    yml = yml.replace(
+      "APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}",
+      "APPLE_CERTIFICATE: unused",
+    );
+    yml = yml.replace(
+      "- run: codesign --verify --deep --strict out.app",
+      "- run: echo ${{ secrets.APPLE_CERTIFICATE }} && codesign --verify --deep --strict out.app",
+    );
+    const errs = checkDesktopReleaseWorkflowContent(yml);
+    expect(
+      errs.some((e) => /must not use secrets expressions inside run/i.test(e)),
+    ).toBe(true);
+  });
+
+  it("ties Authenticode and windows signed upload to SignPath output-artifact-directory", () => {
+    expect(
+      parseSignPathOutputArtifactDirectory(
+        "          output-artifact-directory: signed-out\n",
+      ),
+    ).toBe("signed-out");
+
+    // Authenticode inspects wrong path (unsigned rename after fake Valid).
+    let yml = signedReleaseHappyPathYaml();
+    expect(yml).toContain("signed-out");
+    yml = yml.replace(
+      /Get-AuthenticodeSignature[^\n]+/,
+      "Get-AuthenticodeSignature .\\bundle\\nsis\\unsigned.exe",
+    );
+    let errs = checkDesktopReleaseWorkflowContent(yml);
+    expect(
+      errs.some((e) =>
+        /Authenticode step must inspect files under SignPath output-artifact-directory/i.test(
+          e,
+        ),
+      ),
+    ).toBe(true);
+
+    // Final upload path not the SignPath output dir.
+    yml = signedReleaseHappyPathYaml().replace(
+      /name: opsmate-windows-signed\n\s*path:\s*signed-out\/?/,
+      "name: opsmate-windows-signed\n          path: bundle/nsis/",
+    );
+    errs = checkDesktopReleaseWorkflowContent(yml);
+    expect(
+      errs.some((e) =>
+        /upload path must be SignPath output-artifact-directory/i.test(e),
+      ),
+    ).toBe(true);
+  });
+
+  it("requires real SHA-256 over staged release-assets and rejects one-level platform globs", () => {
+    expect(isRealSha256Command("sha256sum a b > SHA256SUMS")).toBe(true);
+    expect(isRealSha256Command("shasum -a 256 a > SHA256SUMS")).toBe(true);
+    expect(
+      isRealSha256Command("Get-FileHash -Algorithm SHA256 a | Out-File SHA256SUMS"),
+    ).toBe(true);
+    expect(isRealSha256Command("echo SHA256SUMS")).toBe(false);
+
+    // Old one-level globs (Linux nested appimage/deb dirs break this).
+    let yml = signedReleaseHappyPathYaml().replace(
+      /sha256sum -- "\$\{files\[@\]\}" > SHA256SUMS/,
+      `sha256sum ${ARTIFACT_MACOS}/* ${ARTIFACT_WINDOWS}/* ${ARTIFACT_LINUX}/* > SHA256SUMS`,
+    );
+    let errs = checkDesktopReleaseWorkflowContent(yml);
+    expect(
+      errs.some((e) => /one-level artifact globs/i.test(e)),
+    ).toBe(true);
+
+    yml = signedReleaseHappyPathYaml().replace(
+      /gh release create "\$GITHUB_REF_NAME" --prerelease -- "\$\{files\[@\]\}" SHA256SUMS/,
+      `gh release create "$GITHUB_REF_NAME" ${ARTIFACT_MACOS}/* ${ARTIFACT_WINDOWS}/* ${ARTIFACT_LINUX}/* SHA256SUMS`,
+    );
+    errs = checkDesktopReleaseWorkflowContent(yml);
+    expect(
+      errs.some(
+        (e) =>
+          /one-level/i.test(e) ||
+          /staged release-assets regular files/i.test(e),
+      ),
+    ).toBe(true);
+
+    yml = signedReleaseHappyPathYaml().replace(
+      /sha256sum -- "\$\{files\[@\]\}" > SHA256SUMS/,
+      "echo 'checksums' > SHA256SUMS",
+    );
+    errs = checkDesktopReleaseWorkflowContent(yml);
+    expect(errs.some((e) => /real SHA-256 command/i.test(e))).toBe(true);
+
+    yml = signedReleaseHappyPathYaml().replace(
+      /gh release create "\$GITHUB_REF_NAME" --prerelease -- "\$\{files\[@\]\}" SHA256SUMS/,
+      'gh release create "$GITHUB_REF_NAME" SHA256SUMS',
+    );
+    errs = checkDesktopReleaseWorkflowContent(yml);
+    expect(
+      errs.some((e) => /publish staged release-assets/i.test(e)),
+    ).toBe(true);
+  });
+  it("rejects cross-job Apple secrets and environment only on one job", () => {
+    let yml = signedReleaseHappyPathYaml().replace(
+      /environment: desktop-release\n/g,
+      "",
+    );
+    yml = yml.replace(
+      /linux:\n    runs-on: ubuntu-24.04\n/m,
+      "linux:\n    runs-on: ubuntu-24.04\n    environment: desktop-release\n",
+    );
+    const errs = checkDesktopReleaseWorkflowContent(yml);
+    expect(errs.some((e) => /job 'macos' must set environment/i.test(e))).toBe(
+      true,
+    );
+    expect(errs.some((e) => /job 'windows' must set environment/i.test(e))).toBe(
+      true,
+    );
+  });
+
+  it("rejects wrong SignPath SHA, missing step id artifact-id, and pre-sign Authenticode", () => {
+    let yml = signedReleaseHappyPathYaml().replace(
+      REQUIRED_SIGNPATH_ACTION_SHA,
+      "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    );
+    let errs = checkDesktopReleaseWorkflowContent(yml);
+    expect(errs.some((e) => /exact pinned/i.test(e))).toBe(true);
+
+    yml = signedReleaseHappyPathYaml().replace(
+      "id: unsigned_nsis",
+      "name: no-id-upload",
+    );
+    errs = checkDesktopReleaseWorkflowContent(yml);
+    expect(errs.some((e) => /must set id:/i.test(e))).toBe(true);
+
+    yml = signedReleaseHappyPathYaml();
+    // Move Authenticode before SignPath by swapping step order roughly:
+    yml = yml.replace(
+      /      - name: SignPath request[\s\S]*?output-artifact-directory: signed-out\n      - run: \|\n          \$s = Get-AuthenticodeSignature[\s\S]*?throw 'Authenticode not Valid' \}\n/,
+      `      - run: |
+          $s = Get-AuthenticodeSignature .\\\\early.exe
+          if ($s.Status -ne 'Valid') { throw 'Authenticode not Valid' }
+      - name: SignPath request
+        # documented pin v2
+        uses: signpath/github-action-submit-signing-request@${REQUIRED_SIGNPATH_ACTION_SHA}
+        with:
+          api-token: \${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: \${{ secrets.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: \${{ secrets.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: \${{ secrets.SIGNPATH_SIGNING_POLICY_SLUG }}
+          artifact-configuration-slug: \${{ secrets.SIGNPATH_ARTIFACT_CONFIGURATION_SLUG }}
+          github-artifact-id: \${{ steps.unsigned_nsis.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: signed-out
+`,
+    );
+    errs = checkDesktopReleaseWorkflowContent(yml);
+    expect(
+      errs.some((e) => /AuthenticodeSignature step must run after SignPath/i.test(e)),
+    ).toBe(true);
+  });
+
+  it("rejects release missing download, wrong order, and unsigned reference", () => {
+    let yml = signedReleaseHappyPathYaml().replace(
+      new RegExp(
+        String.raw`      - uses: actions/download-artifact@v4\n        with:\n          name: ${ARTIFACT_LINUX}\n          path: ${ARTIFACT_LINUX}\n`,
+      ),
+      "",
+    );
+    let errs = checkDesktopReleaseWorkflowContent(yml);
+    expect(
+      errs.some((e) => e.includes(`download-artifact ${ARTIFACT_LINUX}`)),
+    ).toBe(true);
+
+    yml = signedReleaseHappyPathYaml().replace(
+      "needs: [macos, windows, linux]",
+      "needs: [macos, windows]",
+    );
+    errs = checkDesktopReleaseWorkflowContent(yml);
+    expect(errs.some((e) => /needs: must include 'linux'/i.test(e))).toBe(true);
+
+    yml = signedReleaseHappyPathYaml().replace(
+      "gh release create",
+      "gh release create windows-unsigned-nsis && gh release create",
+    );
+    errs = checkDesktopReleaseWorkflowContent(yml);
+    expect(errs.some((e) => /must not reference unsigned/i.test(e))).toBe(true);
+  });
+
+  it("rejects upload before macos verification order and forbidden on: events", () => {
+    let yml = signedReleaseHappyPathYaml();
+    // put upload before ordered verify steps
+    yml = yml.replace(
+      /    steps:\n      - run: npm run tauri -- build --target universal-apple-darwin --bundles dmg\n      - run: codesign --verify --deep --strict out.app\n      - run: spctl --assess --type execute out.app\n      - run: xcrun stapler validate out.dmg\n      - uses: actions\/upload-artifact@v4\n        with:\n          name: opsmate-macos-signed-notarized\n          path: out.dmg\n/,
+      `    steps:
+      - run: npm run tauri -- build --target universal-apple-darwin --bundles dmg
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${ARTIFACT_MACOS}
+          path: out.dmg
+      - run: codesign --verify --deep --strict out.app
+      - run: spctl --assess --type execute out.app
+      - run: xcrun stapler validate out.dmg
+`,
+    );
+    let errs = checkDesktopReleaseWorkflowContent(yml);
+    expect(
+      errs.some((e) => /only after codesign\/spctl\/stapler validate/i.test(e)),
+    ).toBe(true);
+
+    // Reorder: spctl before codesign must fail order check
+    yml = signedReleaseHappyPathYaml().replace(
+      "- run: codesign --verify --deep --strict out.app\n      - run: spctl --assess --type execute out.app\n",
+      "- run: spctl --assess --type execute out.app\n      - run: codesign --verify --deep --strict out.app\n",
+    );
+    errs = checkDesktopReleaseWorkflowContent(yml);
+    expect(
+      errs.some((e) => /order codesign then spctl then stapler validate/i.test(e)),
+    ).toBe(true);
+
+    yml = signedReleaseHappyPathYaml().replace(
+      "on:\n  push:\n    tags:\n      - 'desktop-v*'\n",
+      "on:\n  workflow_dispatch:\n  pull_request:\n  schedule:\n    - cron: '0 0 * * *'\n  push:\n    tags:\n      - 'desktop-v*'\n",
+    );
+    errs = checkDesktopReleaseWorkflowContent(yml);
+    expect(errs.some((e) => /event 'workflow_dispatch'/i.test(e))).toBe(true);
+    expect(errs.some((e) => /event 'pull_request'/i.test(e))).toBe(true);
+    expect(errs.some((e) => /event 'schedule'/i.test(e))).toBe(true);
+  });
+
+  it("checkSignPathReleasePolicyContent requires five secrets, tag, env, NSIS, Valid, fail_closed", () => {
+    const bad = checkSignPathReleasePolicyContent("artifact: foo\n");
+    expect(bad.some((e) => /desktop-v\*/.test(e))).toBe(true);
+    for (const sec of REQUIRED_SIGNPATH_SECRET_NAMES) {
+      expect(bad.some((e) => e.includes(sec))).toBe(true);
+    }
+    const good = checkSignPathReleasePolicyContent(signPathHappyPolicy());
+    expect(good, good.join("\n")).toEqual([]);
+  });
+});

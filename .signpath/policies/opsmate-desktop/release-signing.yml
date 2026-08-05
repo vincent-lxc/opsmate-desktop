@@ -1,0 +1,38 @@
+# Checked-in audit/contract mirror for OpsMate Desktop Windows signing.
+# This file documents the intended SignPath configuration for humans and CI gates.
+# It is NOT automatically imported into SignPath — organization operators must
+# apply equivalent settings in the SignPath product UI / API.
+
+metadata:
+  product: opsmate-desktop
+  role: audit-contract-mirror
+  auto_import: false
+
+allowed_triggers:
+  # Matches desktop-release.yml tag push only.
+  - tag: desktop-v*
+
+required_environment: desktop-release
+
+artifact_lineage:
+  platform: windows
+  installer: nsis
+  source_artifact: windows-unsigned-nsis
+  signed_output_artifact: opsmate-windows-signed
+  output_directory: signed-output
+
+# Protected secret references (GitHub Environment desktop-release).
+# Operators must wire the same five identifiers in SignPath + GitHub secrets.
+protected_secrets:
+  api_token: ${{ secrets.SIGNPATH_API_TOKEN }}
+  organization_id: ${{ secrets.SIGNPATH_ORGANIZATION_ID }}
+  project_slug: ${{ secrets.SIGNPATH_PROJECT_SLUG }}
+  signing_policy_slug: ${{ secrets.SIGNPATH_SIGNING_POLICY_SLUG }}
+  artifact_configuration_slug: ${{ secrets.SIGNPATH_ARTIFACT_CONFIGURATION_SLUG }}
+
+verification:
+  authenticode: Valid
+  fail_closed: true
+  description: >
+    Every signed PE under signed-output must report Authenticode Status Valid;
+    any non-Valid status fails the job (fail_closed: true).
