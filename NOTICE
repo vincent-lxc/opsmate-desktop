@@ -1,9 +1,10 @@
 OpsMate Desktop
-Copyright (c) 2026 OpsMate. All rights reserved.
+Copyright (c) 2026 OpsMate.
 
-This product includes software developed by third parties. Private-stage
-binaries and source remain proprietary (see LICENSE). A full third-party
-license audit is required before any public open-source release.
+This product is licensed under the Mozilla Public License, v. 2.0 (see LICENSE).
+It includes software developed by third parties. The following are audited
+**top-level** dependency notices from package.json and Cargo.toml (not a claim of
+a complete transitive license audit of every nested package).
 
 Major runtime / build dependencies (pinned in package.json / Cargo.toml):
 
@@ -19,9 +20,16 @@ JavaScript / npm
 Rust / crates
   - tauri, tauri-build (Apache-2.0 OR MIT)
   - serde, serde_json (MIT OR Apache-2.0)
+  - russh (Apache-2.0)
+  - tauri-plugin-stronghold, tauri-plugin-opener, tauri-plugin-deep-link
+    (Apache-2.0 OR MIT, as declared by each crate)
 
-Icons and branding assets remaining under OpsMate ownership are not licensed
-for third-party redistribution under this private-stage NOTICE.
+## Trademarks and branding
 
-For complete transitive license data, generate SBOM artifacts in CI
-(CycloneDX for npm and Cargo) when the CI task lands.
+OpsMate names, logos, and trademarks are not licensed under the MPL-2.0. They
+remain OpsMate brand assets. The MPL-2.0 still governs redistribution of the
+covered **source code** in this repository; trademark law (not this NOTICE)
+restricts confusing use of OpsMate marks.
+
+For richer dependency inventory, generate SBOMs (e.g. CycloneDX for npm and Cargo)
+in CI when publishing a release.

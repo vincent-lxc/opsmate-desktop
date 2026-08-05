@@ -5,7 +5,7 @@ description = "OpsMate Desktop — independent secure client shell"
 authors = ["OpsMate"]
 edition = "2021"
 rust-version = "1.92"
-license = "LicenseRef-Proprietary"
+license = "MPL-2.0"
 
 [lib]
 name = "opsmate_desktop_lib"

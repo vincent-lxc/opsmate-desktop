@@ -1,9 +1,12 @@
 # OpsMate Desktop
 
-Independent **private** desktop client for OpsMate (运维助手).
+Independent **pre-release** desktop client for OpsMate (运维助手).
 
-React 19 UI + Tauri 2 / Rust 1.92. Sessions, vault material, and cloud transport
-are owned by Rust; the WebView never holds JWTs or private keys.
+React 19 UI + Tauri 2 / Rust 1.92. This repository is the **desktop client only**:
+sessions (Logto PKCE), cloud transport, local Stronghold vault, and local SSH are
+owned by Rust. The WebView never holds JWTs or private keys.
+
+**License:** [Mozilla Public License 2.0](./LICENSE) (SPDX `MPL-2.0`).
 
 ## Product scope
 
@@ -16,10 +19,9 @@ are owned by Rust; the WebView never holds JWTs or private keys.
 
 **Contextual (not top-level)**
 
-- Terminal / AI workspace — entered from server detail `/servers/:serverId`
-  (placeholder reserved; implemented in a later task)
+- Terminal / SSH and AI workspace — entered from server detail `/servers/:serverId`
 
-**Excluded**
+**Excluded from this shell**
 
 - Standalone top-level Terminal/AI menu
 - Roles / menu administration
@@ -27,6 +29,20 @@ are owned by Rust; the WebView never holds JWTs or private keys.
 - System management
 - Super-admin AI Provider configuration
 - Official Telegram Bot configuration
+
+## Credentials and trust boundaries
+
+- **Local vault (default):** SSH keys and passwords stored in the local Stronghold
+  vault stay **local by default** on the device; they are not uploaded unless the
+  user takes an explicit product action that requires otherwise.
+- **Cloud-hosted credentials:** when the user **explicitly selects** cloud-hosted
+  credentials, those credentials enable **unattended patrol** against managed
+  hosts. That path is opt-in, not the default for local private keys.
+- **SaaS remains closed:** cloud login/authentication (Logto), account,
+  subscription, monitoring data plane, and AI features that call OpsMate cloud
+  remain **OpsMate SaaS services** at `https://app.itops.sh` /
+  `wss://app.itops.sh`. **Publishing this desktop repository does not open-source
+  the SaaS backend.**
 
 ## Independence
 
@@ -44,18 +60,20 @@ npm run build:web
 
 # Rust / Tauri (use Rust 1.92+)
 rustup run 1.92.0 cargo test --manifest-path src-tauri/Cargo.toml
-npm run dev:tauri   # requires desktop deps; foundation shell only today
+npm run dev:tauri
 rustup run 1.92.0 npm run build
 ```
 
 ## Security docs
 
-- [SECURITY.md](./SECURITY.md) — private disclosure
-- [THREAT_MODEL.md](./THREAT_MODEL.md) — trust boundaries
+- [SECURITY.md](./SECURITY.md) — vulnerability reporting (private advisory)
+- [THREAT_MODEL.md](./THREAT_MODEL.md) — trust boundaries and controls
 - [NOTICE](./NOTICE) — third-party notices
-- [LICENSE](./LICENSE) — All rights reserved (private stage)
+- [LICENSE](./LICENSE) — MPL-2.0
 
 ## Status
 
-Foundation shell only. Auth, vault, SSH, cloud transport, contracts, and CI land
-in subsequent tasks. Do not treat this scaffold as production-ready.
+Pre-release desktop client under active development. Branch CI may produce
+**internal-unsigned** installers for engineering use. This repository does **not**
+claim production readiness, code signing, notarization, or a public Release
+channel for signed binaries.

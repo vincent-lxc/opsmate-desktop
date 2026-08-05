@@ -1,0 +1,14 @@
+# High-risk release and signing surfaces — require owner review.
+# Trailing-slash-only patterns do not reliably own descendants; use ** globs.
+/.github/workflows/** @vincent-lxc
+/.signpath/** @vincent-lxc
+
+# Public-source and security control documents.
+LICENSE @vincent-lxc
+NOTICE @vincent-lxc
+SECURITY.md @vincent-lxc
+THREAT_MODEL.md @vincent-lxc
+.github/CODEOWNERS @vincent-lxc
+.github/dependabot.yml @vincent-lxc
+scripts/check-release-config.mjs @vincent-lxc
+tests/security/ @vincent-lxc
