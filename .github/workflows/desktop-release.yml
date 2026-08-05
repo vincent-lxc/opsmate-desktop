@@ -124,7 +124,7 @@ jobs:
 
       - name: Upload macOS signed notarized artifact
         # actions/upload-artifact@v4
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: opsmate-macos-signed-notarized
           path: src-tauri/target/universal-apple-darwin/release/bundle/dmg/*
@@ -206,7 +206,7 @@ jobs:
       - name: Upload unsigned NSIS
         id: unsigned_nsis
         # actions/upload-artifact@v4
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: windows-unsigned-nsis
           path: src-tauri/target/release/bundle/nsis/*
@@ -243,7 +243,7 @@ jobs:
 
       - name: Upload Windows signed artifact
         # actions/upload-artifact@v4
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: opsmate-windows-signed
           path: signed-output
@@ -331,7 +331,7 @@ jobs:
 
       - name: Upload Linux release artifact
         # actions/upload-artifact@v4
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: opsmate-linux-release
           path: |

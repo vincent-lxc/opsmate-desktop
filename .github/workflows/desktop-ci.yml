@@ -142,7 +142,7 @@ jobs:
 
       - name: Upload internal-unsigned macOS artifacts
         if: matrix.platform == 'macos'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: opsmate-macos-internal-unsigned
           path: |
@@ -152,7 +152,7 @@ jobs:
 
       - name: Upload internal-unsigned Windows NSIS artifacts
         if: matrix.platform == 'windows'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: opsmate-windows-internal-unsigned
           path: |
@@ -162,7 +162,7 @@ jobs:
 
       - name: Upload internal-unsigned Linux AppImage + deb artifacts
         if: matrix.platform == 'linux'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: opsmate-linux-internal-unsigned
           path: |
