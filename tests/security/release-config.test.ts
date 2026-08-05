@@ -39,6 +39,19 @@ import {
   REQUIRED_RELEASE_ENVIRONMENT,
   REQUIRED_RELEASE_TAG_PATTERN,
   REQUIRED_NODE_VERSION,
+  REQUIRED_ACTIONS_CACHE,
+  REQUIRED_ACTIONS_CACHE_SHA,
+  REQUIRED_ACTIONS_CHECKOUT,
+  REQUIRED_ACTIONS_CHECKOUT_SHA,
+  REQUIRED_ACTIONS_DOWNLOAD_ARTIFACT,
+  REQUIRED_ACTIONS_DOWNLOAD_ARTIFACT_SHA,
+  REQUIRED_ACTIONS_SETUP_NODE,
+  REQUIRED_ACTIONS_SETUP_NODE_SHA,
+  REQUIRED_ACTIONS_UPLOAD_ARTIFACT,
+  REQUIRED_ACTIONS_UPLOAD_ARTIFACT_SHA,
+  REQUIRED_GH_ACTION_SET_CI,
+  REQUIRED_GH_ACTION_SET_RELEASE,
+  REQUIRED_GH_ACTION_SHA_PINS,
   REQUIRED_RUST_TOOLCHAIN_ACTION,
   REQUIRED_RUST_VERSION,
   REQUIRED_SCHEMES,
@@ -49,6 +62,7 @@ import {
   REQUIRED_WIN_TAURI_CMD,
   SIGNPATH_POLICY_PATH,
   checkGitAttributesLf,
+  checkWorkflowGhActionPins,
   extractWorkflowJobs,
   isRealSha256Command,
   lineHasSecretExpression,
@@ -189,6 +203,159 @@ describe("Task 5 release config", () => {
 
     const lfErrors = checkGitAttributesLf();
     expect(lfErrors, lfErrors.join("\n")).toEqual([]);
+  });
+
+  it("pins official actions/* to approved full SHAs (Task 10C/10D, includes release download-artifact)", () => {
+    expect(REQUIRED_ACTIONS_CHECKOUT_SHA).toMatch(/^[0-9a-f]{40}$/);
+    expect(REQUIRED_ACTIONS_SETUP_NODE_SHA).toMatch(/^[0-9a-f]{40}$/);
+    expect(REQUIRED_ACTIONS_CACHE_SHA).toMatch(/^[0-9a-f]{40}$/);
+    expect(REQUIRED_ACTIONS_UPLOAD_ARTIFACT_SHA).toMatch(/^[0-9a-f]{40}$/);
+    expect(REQUIRED_ACTIONS_DOWNLOAD_ARTIFACT_SHA).toBe(
+      "3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
+    );
+    expect(REQUIRED_ACTIONS_DOWNLOAD_ARTIFACT_SHA).toMatch(/^[0-9a-f]{40}$/);
+    expect(REQUIRED_GH_ACTION_SET_CI).toEqual([
+      "actions/checkout",
+      "actions/setup-node",
+      "actions/cache",
+      "actions/upload-artifact",
+    ]);
+    expect(REQUIRED_GH_ACTION_SET_RELEASE).toEqual([
+      ...REQUIRED_GH_ACTION_SET_CI,
+      "actions/download-artifact",
+    ]);
+    expect(REQUIRED_GH_ACTION_SHA_PINS["actions/download-artifact"]).toBe(
+      REQUIRED_ACTIONS_DOWNLOAD_ARTIFACT_SHA,
+    );
+
+    const ciYml = readFileSync(
+      resolve(root, ".github/workflows/desktop-ci.yml"),
+      "utf8",
+    );
+    const releaseYml = readFileSync(
+      resolve(root, ".github/workflows/desktop-release.yml"),
+      "utf8",
+    );
+
+    for (const [rel, yml] of [
+      [".github/workflows/desktop-ci.yml", ciYml],
+      [".github/workflows/desktop-release.yml", releaseYml],
+    ] as const) {
+      expect(yml, rel).not.toMatch(
+        /uses:\s*actions\/(?:checkout|setup-node|cache|upload-artifact|download-artifact)@v\d+/,
+      );
+      for (const pin of [
+        REQUIRED_ACTIONS_CHECKOUT,
+        REQUIRED_ACTIONS_SETUP_NODE,
+        REQUIRED_ACTIONS_CACHE,
+        REQUIRED_ACTIONS_UPLOAD_ARTIFACT,
+      ]) {
+        expect(yml, `${rel} missing ${pin}`).toContain(pin);
+      }
+      const pinErrs = checkWorkflowGhActionPins(yml, rel);
+      expect(pinErrs, pinErrs.join("\n")).toEqual([]);
+      expect(yml).toMatch(/node-version:\s*"22\.22\.0"/);
+    }
+
+    // Release aggregator must pin download-artifact exactly (tag path only).
+    expect(releaseYml).toContain(REQUIRED_ACTIONS_DOWNLOAD_ARTIFACT);
+    expect(releaseYml).not.toMatch(
+      /actions\/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093/,
+    );
+    const downloadUses = [
+      ...releaseYml.matchAll(
+        /uses:\s*actions\/download-artifact@([^\s#]+)/g,
+      ),
+    ].map((m) => m[1]);
+    expect(downloadUses.length).toBeGreaterThanOrEqual(3);
+    expect(
+      downloadUses.every((r) => r === REQUIRED_ACTIONS_DOWNLOAD_ARTIFACT_SHA),
+    ).toBe(true);
+    // CI has no download step (presence not required).
+    expect(ciYml).not.toMatch(/actions\/download-artifact@/);
+
+    // Reject floating tags and old download-artifact SHA.
+    const floating = `
+on:
+  push:
+    tags:
+      - 'desktop-v*'
+permissions:
+  contents: read
+  actions: read
+jobs:
+  macos:
+    runs-on: macos-14
+    environment: desktop-release
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.22.0"
+      - uses: actions/cache@v4
+      - uses: actions/upload-artifact@v4
+        with:
+          name: x
+          path: y
+  windows:
+    runs-on: windows-2025
+    environment: desktop-release
+    steps:
+      - uses: actions/setup-node@${REQUIRED_ACTIONS_SETUP_NODE_SHA}
+        with:
+          node-version: "22.22.0"
+  linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/setup-node@${REQUIRED_ACTIONS_SETUP_NODE_SHA}
+        with:
+          node-version: "22.22.0"
+  release:
+    needs: [macos, windows, linux]
+    runs-on: ubuntu-24.04
+    environment: desktop-release
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: x
+`;
+    const floatErrs = checkDesktopReleaseWorkflowContent(floating);
+    expect(
+      floatErrs.some((e) => /full 40-hex SHA|floating|@v4/i.test(e)),
+      floatErrs.join("\n"),
+    ).toBe(true);
+    expect(
+      floatErrs.some((e) => /download-artifact/i.test(e)),
+      floatErrs.join("\n"),
+    ).toBe(true);
+
+    const oldDownload = releaseYml.replaceAll(
+      REQUIRED_ACTIONS_DOWNLOAD_ARTIFACT_SHA,
+      "d3f86a106a0bac45b974a628896c90dbdf5c8093",
+    );
+    const oldErrs = checkWorkflowGhActionPins(
+      oldDownload,
+      "desktop-release.yml",
+    );
+    expect(
+      oldErrs.some(
+        (e) =>
+          /download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c/i.test(
+            e,
+          ) || /got d3f86a/i.test(e),
+      ),
+      oldErrs.join("\n"),
+    ).toBe(true);
+
+    const ciErrors = checkDesktopCiWorkflow();
+    expect(ciErrors, ciErrors.join("\n")).toEqual([]);
+    const releaseErrors = checkDesktopReleaseWorkflow();
+    expect(
+      releaseErrors.filter((e) => /actions\/|40-hex|pin/i.test(e)),
+      releaseErrors.join("\n"),
+    ).toEqual([]);
   });
 
   it("rejects Node 20 in desktop-ci and desktop-release checker content", () => {
@@ -351,7 +518,9 @@ jobs:
     const base = signedReleaseHappyPathYaml();
     // Delete only macos node-version; windows/linux remain exact 22.22.0.
     const noMacosPin = base.replace(
-      /(jobs:\n  macos:[\s\S]*?steps:\n      - uses: actions\/setup-node@v4\n        with:\n)          node-version: "22\.22\.0"\n/,
+      new RegExp(
+        `(jobs:\\n  macos:[\\s\\S]*?steps:\\n(?:      - uses: actions\\/checkout@${REQUIRED_ACTIONS_CHECKOUT_SHA}\\n)?      - uses: actions\\/setup-node@${REQUIRED_ACTIONS_SETUP_NODE_SHA}\\n        with:\\n)          node-version: "22\\.22\\.0"\\n`,
+      ),
       "$1",
     );
     expect(noMacosPin).toMatch(/windows:[\s\S]*node-version:\s*"22\.22\.0"/);
@@ -370,7 +539,9 @@ jobs:
 
     // Delete only windows node-version; macos/linux remain correct.
     const noWindowsPin = base.replace(
-      /(jobs:[\s\S]*?windows:[\s\S]*?steps:\n      - uses: actions\/setup-node@v4\n        with:\n)          node-version: "22\.22\.0"\n/,
+      new RegExp(
+        `(jobs:[\\s\\S]*?windows:[\\s\\S]*?steps:\\n(?:      - uses: actions\\/checkout@${REQUIRED_ACTIONS_CHECKOUT_SHA}\\n)?      - uses: actions\\/setup-node@${REQUIRED_ACTIONS_SETUP_NODE_SHA}\\n        with:\\n)          node-version: "22\\.22\\.0"\\n`,
+      ),
       "$1",
     );
     expect(
@@ -967,6 +1138,11 @@ updates:
 /** Minimal GREEN skeleton for indentation-aware job checks. */
 function signedReleaseHappyPathYaml(): string {
   const sha = REQUIRED_SIGNPATH_ACTION_SHA;
+  const checkout = REQUIRED_ACTIONS_CHECKOUT;
+  const setupNode = REQUIRED_ACTIONS_SETUP_NODE;
+  const cache = REQUIRED_ACTIONS_CACHE;
+  const upload = REQUIRED_ACTIONS_UPLOAD_ARTIFACT;
+  const download = REQUIRED_ACTIONS_DOWNLOAD_ARTIFACT;
   return `
 on:
   push:
@@ -987,15 +1163,20 @@ jobs:
       APPLE_PASSWORD: \${{ secrets.APPLE_PASSWORD }}
       APPLE_TEAM_ID: \${{ secrets.APPLE_TEAM_ID }}
     steps:
-      - uses: actions/setup-node@v4
+      - uses: ${checkout}
+      - uses: ${setupNode}
         with:
           node-version: "22.22.0"
           cache: npm
+      - uses: ${cache}
+        with:
+          path: src-tauri/target
+          key: cargo-mac
       - run: npm run tauri -- build --target universal-apple-darwin --bundles dmg
       - run: codesign --verify --deep --strict out.app
       - run: spctl --assess --type execute out.app
       - run: xcrun stapler validate out.dmg
-      - uses: actions/upload-artifact@v4
+      - uses: ${upload}
         with:
           name: ${ARTIFACT_MACOS}
           path: out.dmg
@@ -1003,14 +1184,19 @@ jobs:
     runs-on: windows-2025
     environment: desktop-release
     steps:
-      - uses: actions/setup-node@v4
+      - uses: ${checkout}
+      - uses: ${setupNode}
         with:
           node-version: "22.22.0"
           cache: npm
+      - uses: ${cache}
+        with:
+          path: src-tauri/target
+          key: cargo-win
       - run: npm run tauri -- build --bundles nsis
       - name: upload unsigned nsis
         id: unsigned_nsis
-        uses: actions/upload-artifact@v4
+        uses: ${upload}
         with:
           name: windows-unsigned-nsis
           path: bundle/nsis/*.exe
@@ -1029,19 +1215,24 @@ jobs:
       - run: |
           $s = Get-AuthenticodeSignature .\\signed-out\\app.exe
           if ($s.Status -ne 'Valid') { throw 'Authenticode not Valid' }
-      - uses: actions/upload-artifact@v4
+      - uses: ${upload}
         with:
           name: ${ARTIFACT_WINDOWS}
           path: signed-out/
   linux:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/setup-node@v4
+      - uses: ${checkout}
+      - uses: ${setupNode}
         with:
           node-version: "22.22.0"
           cache: npm
+      - uses: ${cache}
+        with:
+          path: src-tauri/target
+          key: cargo-linux
       - run: npm run tauri -- build --bundles appimage,deb
-      - uses: actions/upload-artifact@v4
+      - uses: ${upload}
         with:
           name: ${ARTIFACT_LINUX}
           path: bundle/
@@ -1052,15 +1243,15 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: ${download}
         with:
           name: ${ARTIFACT_MACOS}
           path: ${ARTIFACT_MACOS}
-      - uses: actions/download-artifact@v4
+      - uses: ${download}
         with:
           name: ${ARTIFACT_WINDOWS}
           path: ${ARTIFACT_WINDOWS}
-      - uses: actions/download-artifact@v4
+      - uses: ${download}
         with:
           name: ${ARTIFACT_LINUX}
           path: ${ARTIFACT_LINUX}
@@ -1375,7 +1566,7 @@ describe("Task 8A desktop signed-release controls", () => {
   it("rejects release missing download, wrong order, and unsigned reference", () => {
     let yml = signedReleaseHappyPathYaml().replace(
       new RegExp(
-        String.raw`      - uses: actions/download-artifact@v4\n        with:\n          name: ${ARTIFACT_LINUX}\n          path: ${ARTIFACT_LINUX}\n`,
+        String.raw`      - uses: actions/download-artifact@${REQUIRED_ACTIONS_DOWNLOAD_ARTIFACT_SHA}\n        with:\n          name: ${ARTIFACT_LINUX}\n          path: ${ARTIFACT_LINUX}\n`,
       ),
       "",
     );
@@ -1403,9 +1594,11 @@ describe("Task 8A desktop signed-release controls", () => {
     let yml = signedReleaseHappyPathYaml();
     // put upload before ordered verify steps (after setup-node + build)
     yml = yml.replace(
-      /- run: npm run tauri -- build --target universal-apple-darwin --bundles dmg\n      - run: codesign --verify --deep --strict out.app\n      - run: spctl --assess --type execute out.app\n      - run: xcrun stapler validate out.dmg\n      - uses: actions\/upload-artifact@v4\n        with:\n          name: opsmate-macos-signed-notarized\n          path: out.dmg\n/,
+      new RegExp(
+        String.raw`- run: npm run tauri -- build --target universal-apple-darwin --bundles dmg\n      - run: codesign --verify --deep --strict out.app\n      - run: spctl --assess --type execute out.app\n      - run: xcrun stapler validate out.dmg\n      - uses: actions\/upload-artifact@${REQUIRED_ACTIONS_UPLOAD_ARTIFACT_SHA}\n        with:\n          name: opsmate-macos-signed-notarized\n          path: out.dmg\n`,
+      ),
       `- run: npm run tauri -- build --target universal-apple-darwin --bundles dmg
-      - uses: actions/upload-artifact@v4
+      - uses: ${REQUIRED_ACTIONS_UPLOAD_ARTIFACT}
         with:
           name: ${ARTIFACT_MACOS}
           path: out.dmg

@@ -59,6 +59,52 @@ export const REQUIRED_RUST_VERSION = "1.92.0";
 export const REQUIRED_NODE_VERSION = "22.22.0";
 export const REQUIRED_ARTIFACT_TOKEN = "internal-unsigned";
 
+/**
+ * Task 10C/10D — approved full commit SHAs for official actions/* (Node 24 runtimes).
+ * Floating tags / old SHAs are Node-20 deprecation surface. download-artifact is
+ * required on the tag release aggregator (Task 10D; official v8.0.1 uses node24).
+ */
+export const REQUIRED_ACTIONS_CHECKOUT_SHA =
+  "3d3c42e5aac5ba805825da76410c181273ba90b1";
+export const REQUIRED_ACTIONS_SETUP_NODE_SHA =
+  "820762786026740c76f36085b0efc47a31fe5020";
+export const REQUIRED_ACTIONS_CACHE_SHA =
+  "55cc8345863c7cc4c66a329aec7e433d2d1c52a9";
+export const REQUIRED_ACTIONS_UPLOAD_ARTIFACT_SHA =
+  "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a";
+/** actions/download-artifact@v8.0.1 tag commit (using: node24). */
+export const REQUIRED_ACTIONS_DOWNLOAD_ARTIFACT_SHA =
+  "3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c";
+
+/** action name → required 40-hex SHA (no floating tags). */
+export const REQUIRED_GH_ACTION_SHA_PINS = Object.freeze({
+  "actions/checkout": REQUIRED_ACTIONS_CHECKOUT_SHA,
+  "actions/setup-node": REQUIRED_ACTIONS_SETUP_NODE_SHA,
+  "actions/cache": REQUIRED_ACTIONS_CACHE_SHA,
+  "actions/upload-artifact": REQUIRED_ACTIONS_UPLOAD_ARTIFACT_SHA,
+  "actions/download-artifact": REQUIRED_ACTIONS_DOWNLOAD_ARTIFACT_SHA,
+});
+
+/** Branch CI must present these four (no download steps). */
+export const REQUIRED_GH_ACTION_SET_CI = Object.freeze([
+  "actions/checkout",
+  "actions/setup-node",
+  "actions/cache",
+  "actions/upload-artifact",
+]);
+
+/** Tag release must present CI set + download-artifact (aggregator). */
+export const REQUIRED_GH_ACTION_SET_RELEASE = Object.freeze([
+  ...REQUIRED_GH_ACTION_SET_CI,
+  "actions/download-artifact",
+]);
+
+export const REQUIRED_ACTIONS_CHECKOUT = `actions/checkout@${REQUIRED_ACTIONS_CHECKOUT_SHA}`;
+export const REQUIRED_ACTIONS_SETUP_NODE = `actions/setup-node@${REQUIRED_ACTIONS_SETUP_NODE_SHA}`;
+export const REQUIRED_ACTIONS_CACHE = `actions/cache@${REQUIRED_ACTIONS_CACHE_SHA}`;
+export const REQUIRED_ACTIONS_UPLOAD_ARTIFACT = `actions/upload-artifact@${REQUIRED_ACTIONS_UPLOAD_ARTIFACT_SHA}`;
+export const REQUIRED_ACTIONS_DOWNLOAD_ARTIFACT = `actions/download-artifact@${REQUIRED_ACTIONS_DOWNLOAD_ARTIFACT_SHA}`;
+
 /** Generated contract outputs that must stay LF on Windows checkout. */
 export const REQUIRED_LF_PATHS = [
   "src-tauri/src/cloud_transport/operations.rs",
@@ -379,6 +425,62 @@ export const REQUIRED_MAC_TAURI_CMD =
 export const REQUIRED_WIN_TAURI_CMD = "npm run tauri -- build --bundles nsis";
 export const REQUIRED_LINUX_TAURI_CMD =
   "npm run tauri -- build --bundles appimage,deb";
+
+const GH_ACTION_SHA_HEX = /^[0-9a-f]{40}$/i;
+const GH_ACTION_USES_RE =
+  /uses:\s*(actions\/(?:checkout|setup-node|cache|upload-artifact|download-artifact))@([^\s#'"]+)/g;
+
+/**
+ * Pin gate for official actions/* used in desktop CI/release.
+ *
+ * - Every matched known action must equal the approved full 40-hex SHA.
+ * - Presence set: desktop-ci → REQUIRED_GH_ACTION_SET_CI;
+ *   desktop-release → REQUIRED_GH_ACTION_SET_RELEASE (includes download-artifact).
+ * - download-artifact is not required on CI (no download steps); if present
+ *   anywhere it must still be the approved SHA.
+ *
+ * @param {string} yml workflow YAML
+ * @param {string} label e.g. desktop-ci.yml / desktop-release.yml
+ * @returns {string[]}
+ */
+export function checkWorkflowGhActionPins(yml, label) {
+  const errors = [];
+  const text = String(yml ?? "");
+  const isRelease = /desktop-release/.test(label);
+  const requiredNames = isRelease
+    ? REQUIRED_GH_ACTION_SET_RELEASE
+    : REQUIRED_GH_ACTION_SET_CI;
+
+  const uses = [...text.matchAll(GH_ACTION_USES_RE)];
+  /** @type {Record<string, number>} */
+  const seen = {};
+
+  for (const m of uses) {
+    const name = m[1];
+    const ref = m[2].replace(/['"]/g, "");
+    const required = REQUIRED_GH_ACTION_SHA_PINS[name];
+    seen[name] = (seen[name] ?? 0) + 1;
+    if (!required) continue;
+    if (!GH_ACTION_SHA_HEX.test(ref)) {
+      errors.push(
+        `${label} must pin ${name} to full 40-hex SHA ${required} (got ${ref}; floating tags like @v4 are Node-20 deprecation surface)`,
+      );
+      continue;
+    }
+    if (ref.toLowerCase() !== required.toLowerCase()) {
+      errors.push(`${label} must pin ${name}@${required} (got ${ref})`);
+    }
+  }
+
+  for (const name of requiredNames) {
+    if (!seen[name]) {
+      errors.push(
+        `${label} must include ${name}@${REQUIRED_GH_ACTION_SHA_PINS[name]}`,
+      );
+    }
+  }
+  return errors;
+}
 /**
  * Pinned full commit SHA for dtolnay/rust-toolchain refs/heads/1.92.0
  * (ls-remote proves 1.92.0 is a branch tip, not an immutable tag).
@@ -534,15 +636,16 @@ export function checkDesktopCiWorkflow() {
     );
   }
   errors.push(...checkRustToolchainActionWithBlock(yml));
-  // Pinned major actions
-  for (const action of [
-    "actions/checkout@v4",
-    "actions/setup-node@v4",
-    "actions/cache@v4",
-    "actions/upload-artifact@v4",
+  // Task 10C: full commit SHAs (not floating @v4 Node-20 action runtimes)
+  errors.push(...checkWorkflowGhActionPins(yml, "desktop-ci.yml"));
+  for (const pin of [
+    REQUIRED_ACTIONS_CHECKOUT,
+    REQUIRED_ACTIONS_SETUP_NODE,
+    REQUIRED_ACTIONS_CACHE,
+    REQUIRED_ACTIONS_UPLOAD_ARTIFACT,
   ]) {
-    if (!yml.includes(action)) {
-      errors.push(`desktop-ci.yml must pin action ${action}`);
+    if (!yml.includes(pin)) {
+      errors.push(`desktop-ci.yml must pin action ${pin}`);
     }
   }
   // Real npm cache via setup-node (not a no-op)
@@ -552,7 +655,10 @@ export function checkDesktopCiWorkflow() {
     );
   }
   // Cargo cache
-  if (!yml.includes("actions/cache@v4") || !yml.toLowerCase().includes("cargo")) {
+  if (
+    !yml.includes(REQUIRED_ACTIONS_CACHE) ||
+    !yml.toLowerCase().includes("cargo")
+  ) {
     errors.push("desktop-ci.yml must cache Cargo artifacts");
   }
   // Ubuntu system packages for Tauri
@@ -1202,6 +1308,9 @@ export function checkDesktopReleaseWorkflowContent(yml) {
       "desktop-release.yml must not set continue-on-error: true anywhere",
     );
   }
+
+  // Task 10C: checkout / setup-node / cache / upload-artifact full SHA pins
+  errors.push(...checkWorkflowGhActionPins(text, "desktop-release.yml"));
 
   // Per-job Node pins (macos/windows/linux) are validated after extractWorkflowJobs.
   // Global whole-file node-version counts are intentionally NOT sufficient: a missing

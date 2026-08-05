@@ -21,8 +21,19 @@
 | `.github/workflows/desktop-ci.yml` | Exact `setup-node` pin (all jobs) | `node-version: "22.22.0"` |
 | `.github/workflows/desktop-release.yml` | Exact pin on macos / windows / linux jobs | `node-version: "22.22.0"` (×3) |
 | `scripts/check-release-config.mjs` | `REQUIRED_NODE_VERSION` + reject Node 20 / wrong pin | `22.22.0` |
+| GH Actions supply-chain (Task 10C/10D) | Full 40-hex SHAs (not floating tags) | checkout/setup-node/upload-artifact **v7**; cache **v6**; download-artifact **v8.0.1** (release) |
 
-**Decision:** Do **not** run CI or release on Node 20. Node 20 fails `engines` for react-router 8.3 and is rejected by release-config checks and security tests. Keep existing pinned `actions/setup-node` action refs (SHA on release jobs; `@v4` on CI).
+**Decision:** Do **not** run app install/build on Node 20. Node 20 fails `engines` for react-router 8.3 and is rejected by release-config checks and security tests. **Also** do not leave official `actions/*` on floating or Node-20-era pins: CI run **31024328981** annotated that checkout/setup-node/cache/upload-artifact `@v4` target deprecated Node 20 action runtimes. Task **10D** closed the release-only gap: tag aggregator uses `actions/download-artifact` (not exercised on branch CI) and must pin official **v8.0.1** (`using: node24`).
+
+| Action | Major / tag | Full SHA | Workflows |
+|--------|-------------|----------|-----------|
+| `actions/checkout` | v7 | `3d3c42e5aac5ba805825da76410c181273ba90b1` | CI + release |
+| `actions/setup-node` | v7 | `820762786026740c76f36085b0efc47a31fe5020` | CI + release |
+| `actions/cache` | v6 | `55cc8345863c7cc4c66a329aec7e433d2d1c52a9` | CI + release |
+| `actions/upload-artifact` | v7 | `043fb46d1a93c77aae656e7c1c64a875d1fc6a0a` | CI + release |
+| `actions/download-artifact` | **v8.0.1** (`using: node24`) | `3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c` | **release only** (required presence) |
+
+App `node-version: "22.22.0"` input is unchanged (engines floor). Action *runtime* Node 24 is separate from application Node.
 
 ## Final lock / pin evidence (from this tree)
 

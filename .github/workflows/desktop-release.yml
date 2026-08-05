@@ -34,12 +34,12 @@ jobs:
       APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
     steps:
       - name: Checkout
-        # actions/checkout@v4
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        # actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
       - name: Setup Node.js
-        # actions/setup-node@v4
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        # actions/setup-node@v7
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: "22.22.0"
           cache: npm
@@ -52,8 +52,8 @@ jobs:
           targets: aarch64-apple-darwin,x86_64-apple-darwin
 
       - name: Cache Cargo
-        # actions/cache@v4
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+        # actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
           path: |
             ~/.cargo/bin/
@@ -123,8 +123,8 @@ jobs:
           xcrun stapler validate "$DMG"
 
       - name: Upload macOS signed notarized artifact
-        # actions/upload-artifact@v4
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        # actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: opsmate-macos-signed-notarized
           path: src-tauri/target/universal-apple-darwin/release/bundle/dmg/*
@@ -136,12 +136,12 @@ jobs:
     environment: desktop-release
     steps:
       - name: Checkout
-        # actions/checkout@v4
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        # actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
       - name: Setup Node.js
-        # actions/setup-node@v4
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        # actions/setup-node@v7
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: "22.22.0"
           cache: npm
@@ -153,8 +153,8 @@ jobs:
           components: rustfmt, clippy
 
       - name: Cache Cargo
-        # actions/cache@v4
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+        # actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
           path: |
             ~/.cargo/bin/
@@ -205,8 +205,8 @@ jobs:
 
       - name: Upload unsigned NSIS
         id: unsigned_nsis
-        # actions/upload-artifact@v4
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        # actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: windows-unsigned-nsis
           path: src-tauri/target/release/bundle/nsis/*
@@ -242,8 +242,8 @@ jobs:
           }
 
       - name: Upload Windows signed artifact
-        # actions/upload-artifact@v4
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        # actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: opsmate-windows-signed
           path: signed-output
@@ -254,12 +254,12 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout
-        # actions/checkout@v4
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        # actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
       - name: Setup Node.js
-        # actions/setup-node@v4
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        # actions/setup-node@v7
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: "22.22.0"
           cache: npm
@@ -271,8 +271,8 @@ jobs:
           components: rustfmt, clippy
 
       - name: Cache Cargo
-        # actions/cache@v4
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+        # actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
           path: |
             ~/.cargo/bin/
@@ -330,8 +330,8 @@ jobs:
           npm run tauri -- build --bundles appimage,deb
 
       - name: Upload Linux release artifact
-        # actions/upload-artifact@v4
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        # actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: opsmate-linux-release
           path: |
@@ -350,22 +350,22 @@ jobs:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - name: Download macOS signed notarized
-        # actions/download-artifact@v4
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        # actions/download-artifact@v8.0.1 (using: node24; pin full tag commit SHA)
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
           name: opsmate-macos-signed-notarized
           path: opsmate-macos-signed-notarized
 
       - name: Download Windows signed
-        # actions/download-artifact@v4
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        # actions/download-artifact@v8.0.1 (using: node24; pin full tag commit SHA)
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
           name: opsmate-windows-signed
           path: opsmate-windows-signed
 
       - name: Download Linux release
-        # actions/download-artifact@v4
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        # actions/download-artifact@v8.0.1 (using: node24; pin full tag commit SHA)
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
           name: opsmate-linux-release
           path: opsmate-linux-release
