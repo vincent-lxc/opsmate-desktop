@@ -233,3 +233,24 @@ Not a production behavior bug. **Not** fixed by broadening `.gitattributes` (exi
 - `src-tauri/src/vault_os_sleep.rs` (`dispatch_src` normalize + CRLF RED/GREEN test)
 - `src-tauri/src/local_ssh/session.rs` (attach normalize + CRLF signature test)
 - `docs/task-6-ci-evidence.md`
+
+---
+
+## Live run — cargo fmt --check (`task_808a83c18bed` / `ctx_8c98872af829`)
+
+**Actions run:** https://github.com/vincent-lxc/opsmate-desktop/actions/runs/31008230079
+**Failure:** `cargo fmt --check` failed on **all three** OSes (macOS / Windows / Linux).
+**Exact diff:** `src-tauri/src/local_ssh/transport.rs` imports — rustfmt wants `#[cfg(test)] use AtomicUsize` **before** `use AtomicBool, Ordering`.
+
+**Fix:** `cargo +1.92.0 fmt --manifest-path src-tauri/Cargo.toml` only (1 file, import reorder; no semantics). HEAD base `04c8560` fairness+CRLF preserved.
+
+| Gate | Result |
+|------|--------|
+| `cargo fmt --check` | **exit 0** |
+| clippy `-D warnings` all-targets/all-features | **exit 0** |
+| Focused fairness + CRLF (9 tests) | **passed** |
+| npm / contracts / release-config / build:web / `git diff --check` | **ok** |
+| Full cargo suite | not re-run (import-only; was 322/1 green) |
+
+**Files:** `src-tauri/src/local_ssh/transport.rs`, `docs/task-6-ci-evidence.md`
+**Non-claims:** no commit/push; no semantic change.

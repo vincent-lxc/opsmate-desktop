@@ -13,9 +13,9 @@
 use super::connect::{HostKeyPolicyHandler, HANDSHAKE_OVERALL_TIMEOUT};
 use super::prepare::LocalSshError;
 use super::session::SessionCloseHandle;
-use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(test)]
 use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
