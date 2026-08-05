@@ -180,7 +180,7 @@ fn seed_session(store: &AuthStore, http: &MockHttp, opener: &MockOpener, seed: u
     let rng = DetRng::new(vec![seed; 64]);
     perform_begin_logto(store, &rng, http, opener).unwrap();
     let state =
-        extract_query_param(&opener.opened.lock().unwrap().last().unwrap(), "state").unwrap();
+        extract_query_param(opener.opened.lock().unwrap().last().unwrap(), "state").unwrap();
     http.set_post_ok(&exchange_body(
         "jwt-tok",
         "u@example.com",

@@ -99,7 +99,11 @@ pub struct LocalSshRegistrationTicket {
 #[derive(Clone)]
 pub struct TicketBarrierSnapshot {
     pub principal: NativePrincipal,
+    /// Captured for future barrier equality / audit; revalidation uses gen epochs today.
+    #[allow(dead_code)]
     pub auth_epoch: u64,
+    /// Captured for future barrier equality / audit; revalidation uses gen epochs today.
+    #[allow(dead_code)]
     pub server_id: String,
     pub credential_id: String,
     pub prepared_ssh_generation: u64,

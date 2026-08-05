@@ -123,7 +123,7 @@ impl Drop for NativeSession {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub(crate) struct AuthMemory {
     pub pending: Option<PendingPkce>,
     pub session: Option<NativeSession>,
@@ -133,19 +133,6 @@ pub(crate) struct AuthMemory {
     pub session_epoch: u64,
     /// Monotonic pending generation; bumps whenever a new pending is installed.
     pub pending_generation: u64,
-}
-
-impl Default for AuthMemory {
-    fn default() -> Self {
-        Self {
-            pending: None,
-            session: None,
-            used_states: HashSet::new(),
-            reauth_required: false,
-            session_epoch: 0,
-            pending_generation: 0,
-        }
-    }
 }
 
 #[derive(Debug, Default)]

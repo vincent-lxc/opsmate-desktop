@@ -45,7 +45,7 @@ fn normalize_key(key: &str) -> String {
 
 fn should_strip_key(key: &str) -> bool {
     let normalized = normalize_key(key);
-    STRIP_NORMALIZED.iter().any(|s| *s == normalized.as_str())
+    STRIP_NORMALIZED.contains(&normalized.as_str())
 }
 
 /// Recursively remove secret/internal fields from a JSON value (in place).
@@ -78,6 +78,8 @@ fn sanitize_object(map: &mut Map<String, Value>) {
 /// Parse JSON and return a sanitized value.
 /// Rejects duplicate object keys at any nesting level (no last-wins).
 /// Invalid JSON or duplicate keys → `Err(())` (caller maps to `InvalidResponse`).
+/// Unit err is intentional: no parse-body leakage into public error types.
+#[allow(clippy::result_unit_err)]
 pub fn sanitize_response_json(raw: &str) -> Result<Value, ()> {
     let mut value = parse_json_reject_duplicate_keys(raw)?;
     sanitize_value(&mut value);
@@ -86,6 +88,7 @@ pub fn sanitize_response_json(raw: &str) -> Result<Value, ()> {
 
 /// Deserialize JSON into `Value`, failing if any object has a repeated key.
 /// Requires the stream to end after one value (rejects trailing JSON/garbage).
+#[allow(clippy::result_unit_err)] // maps to fixed InvalidResponse; no body in Err
 fn parse_json_reject_duplicate_keys(raw: &str) -> Result<Value, ()> {
     let mut de = serde_json::Deserializer::from_str(raw);
     let value = NoDupValue::deserialize(&mut de)

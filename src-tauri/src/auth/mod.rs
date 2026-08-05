@@ -150,11 +150,10 @@ pub struct ExchangeSessionResponse {
 pub fn validate_logto_endpoint(endpoint: &str) -> Result<(), AuthError> {
     let trimmed = endpoint.trim();
     // Exact allowlist only — do not strip repeated trailing slashes.
-    let canonical = if trimmed == LOGTO_PUBLIC_ENDPOINT {
-        LOGTO_PUBLIC_ENDPOINT
-    } else if trimmed.len() == LOGTO_PUBLIC_ENDPOINT.len() + 1
-        && trimmed.starts_with(LOGTO_PUBLIC_ENDPOINT)
-        && trimmed.ends_with('/')
+    let canonical = if trimmed == LOGTO_PUBLIC_ENDPOINT
+        || (trimmed.len() == LOGTO_PUBLIC_ENDPOINT.len() + 1
+            && trimmed.starts_with(LOGTO_PUBLIC_ENDPOINT)
+            && trimmed.ends_with('/'))
     {
         LOGTO_PUBLIC_ENDPOINT
     } else {

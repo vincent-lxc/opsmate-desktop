@@ -120,13 +120,13 @@ mod macos {
                 center.addObserver_selector_name_object(
                     &observer,
                     objc2::sel!(onWillSleep:),
-                    Some(&*NSWorkspaceWillSleepNotification),
+                    Some(NSWorkspaceWillSleepNotification),
                     None::<&AnyObject>,
                 );
                 center.addObserver_selector_name_object(
                     &observer,
                     objc2::sel!(onDidWake:),
-                    Some(&*NSWorkspaceDidWakeNotification),
+                    Some(NSWorkspaceDidWakeNotification),
                     None::<&AnyObject>,
                 );
             }

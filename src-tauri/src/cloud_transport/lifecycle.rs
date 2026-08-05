@@ -20,8 +20,12 @@ use tokio::sync::watch;
 ///    On `Ok(false)` (genuine stale): skip SSH/vault/emit
 pub trait SessionLifecycleHooks: Send + Sync {
     /// `Ok(true)` cleared current; `Ok(false)` stale; `Err` internal/untrusted.
+    /// Unit `Err` is intentional: callers map to fixed public codes without payload leakage.
+    #[allow(clippy::result_unit_err)]
     fn try_clear_auth_for_epoch(&self, epoch: u64) -> Result<bool, ()>;
+    #[allow(clippy::result_unit_err)] // secret-free fail-closed; no error payload
     fn close_all_ssh(&self) -> Result<(), ()>;
+    #[allow(clippy::result_unit_err)] // secret-free fail-closed; no error payload
     fn lock_vault(&self) -> Result<(), ()>;
     fn emit_session_invalidated(&self);
 }

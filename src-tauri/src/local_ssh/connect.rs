@@ -430,7 +430,9 @@ impl russh::client::Handler for HostKeyPolicyHandler {
 
 // ─── Production native TOFU (rfd only; no new deps) ──────────────────────────
 
+/// Production host-key confirmer; wired by later native open path (crate-internal surface).
 #[derive(Debug, Default, Clone, Copy)]
+#[allow(dead_code)]
 pub struct NativeTofuConfirmer;
 
 impl HostKeyConfirmer for NativeTofuConfirmer {
@@ -452,11 +454,14 @@ impl HostKeyConfirmer for NativeTofuConfirmer {
 
 // ─── Local known-hosts filesystem sink ───────────────────────────────────────
 
+/// Filesystem known-hosts sink; production integration surface not yet fully wired.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct FsLocalKnownHosts {
     root: std::path::PathBuf,
 }
 
+#[allow(dead_code)] // methods used via LocalKnownHosts when production wires FsLocalKnownHosts
 impl FsLocalKnownHosts {
     pub fn new(root: impl Into<std::path::PathBuf>) -> Self {
         Self { root: root.into() }
@@ -652,7 +657,7 @@ impl EstablishedLocalSsh {
                     .enable_all()
                     .build();
                 if let Ok(rt) = rt {
-                    let _ = rt.block_on(async {
+                    rt.block_on(async {
                         let _ = tokio::time::timeout(TEARDOWN_BUDGET, async {
                             let _ = handle
                                 .disconnect(russh::Disconnect::ByApplication, "", "en")
@@ -709,6 +714,8 @@ pub struct HandshakeResult {
 }
 
 impl HandshakeResult {
+    /// Convenience close handle; transport open prefers `into_transport_parts`.
+    #[allow(dead_code)]
     pub fn close_handle(&self) -> Arc<dyn SessionCloseHandle> {
         self.connection.clone()
     }
@@ -939,6 +946,8 @@ where
 }
 
 /// Production adapter on `CloudBridge::call_native` (same native-only gate).
+/// Constructed when production open path attaches cloud host-key writes.
+#[allow(dead_code)]
 pub struct BridgeHostKeyWriter<B>
 where
     B: crate::cloud_transport::HttpBackend + 'static,
@@ -950,6 +959,7 @@ impl<B> BridgeHostKeyWriter<B>
 where
     B: crate::cloud_transport::HttpBackend + 'static,
 {
+    #[allow(dead_code)] // production CloudBridge wiring
     pub fn new(bridge: Arc<crate::cloud_bridge::CloudBridge<B>>) -> Self {
         Self { bridge }
     }
@@ -1742,6 +1752,8 @@ NOw48wX/buJxrrPJMsF0AAAACXRlc3QtdXNlcgECAwQ=
         ticket.barrier_snapshot()
     }
 
+    // Test fixture builder mirrors production HandshakeDeps field set (8 deps + barriers).
+    #[allow(clippy::too_many_arguments)]
     fn handshake_deps(
         auth: Arc<AuthStore>,
         cutoff: Arc<SecurityCutoff>,

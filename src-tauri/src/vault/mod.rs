@@ -224,6 +224,8 @@ struct UnlockedState {
     skip_persist: bool,
 }
 
+// Keep Unlocked inline (no Box): avoid extra indirection on secret-bearing vault state.
+#[allow(clippy::large_enum_variant)]
 enum VaultInner {
     Locked {
         snapshot_path: PathBuf,
@@ -1562,13 +1564,14 @@ pub fn production_argon2_config<'a>() -> Config<'a> {
 /// Test-only weak Argon2id (not used by production `derive_vault_key`).
 #[cfg(test)]
 pub fn test_only_argon2_config<'a>() -> Config<'a> {
-    let mut c = Config::default();
-    c.variant = argon2::Variant::Argon2id;
-    c.hash_length = 32;
-    c.lanes = 1;
-    c.mem_cost = 1024;
-    c.time_cost = 1;
-    c
+    Config {
+        variant: argon2::Variant::Argon2id,
+        hash_length: 32,
+        lanes: 1,
+        mem_cost: 1024,
+        time_cost: 1,
+        ..Default::default()
+    }
 }
 
 pub fn derive_vault_key_with_config(
