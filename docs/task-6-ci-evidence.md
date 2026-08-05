@@ -254,3 +254,68 @@ Not a production behavior bug. **Not** fixed by broadening `.gitattributes` (exi
 
 **Files:** `src-tauri/src/local_ssh/transport.rs`, `docs/task-6-ci-evidence.md`
 **Non-claims:** no commit/push; no semantic change.
+
+---
+
+## Final — Task 6 three-platform CI green (`task_a2642eeb2aa0` / `ctx_aea1f26ef41e`)
+
+**Verified via `gh`:** 2026-08-05
+
+| Field | Value |
+|-------|--------|
+| Actions run | https://github.com/vincent-lxc/opsmate-desktop/actions/runs/31009435951 |
+| Run conclusion | **success** |
+| Commit | `ddbc1773b4337b8ae9fe013fd2c6b077ec79315a` |
+| Title | style(rust): satisfy cross-platform format gate |
+| Workflow | `desktop-ci` on `feat/secure-desktop-foundation` |
+
+### Jobs (all success)
+
+| OS job | Job ID | Conclusion |
+|--------|--------|------------|
+| macos-14 | `92317491198` | **success** |
+| windows-2025 | `92317491215` | **success** |
+| ubuntu-24.04 | `92317491338` | **success** |
+
+### Gates passed (per applicable OS)
+
+On each platform job, the following applicable steps concluded **success** (platform-only build/upload steps run only on that OS; others skipped by design):
+
+| Step | macOS | Windows | Ubuntu |
+|------|-------|---------|--------|
+| npm ci / npm test | success | success | success |
+| contracts check | success | success | success |
+| npm run build:web | success | success | success |
+| cargo fmt | success | success | success |
+| cargo clippy (strict) | success | success | success |
+| cargo test | success | success | success |
+| Tauri bundle | dmg (universal) success | NSIS success | AppImage + deb success |
+| Upload internal-unsigned artifacts | success | success | success |
+
+### Artifacts (internal unsigned — verified sizes)
+
+| Artifact name | Size (bytes) |
+|---------------|--------------|
+| `opsmate-windows-internal-unsigned` | **3,962,124** |
+| `opsmate-linux-internal-unsigned` | **202,671,256** |
+| `opsmate-macos-internal-unsigned` | **13,095,236** |
+
+**Artifact claims:** These are **internal unsigned** CI artifacts only. They are **not** signed, **not** notarized, and **not** a public GitHub Release.
+
+### Residual annotations (not failures)
+
+All three jobs annotated:
+
+> Node.js 20 is deprecated. The following actions target Node.js 20 but are being forced to run on Node.js 24: `actions/cache@v4`, `actions/checkout@v4`, `actions/setup-node@v4`, `actions/upload-artifact@v4`.
+
+These are **residual deprecation warnings** for follow-up (action major bumps). They did **not** fail the run.
+
+### Explicit non-claims
+
+- No commit / push for this evidence-only dispatch
+- No claim of signed/notarized/public distribution
+- Node 20 action deprecations remain open follow-up work, not Task 6 blockers
+
+### Files (this final evidence dispatch)
+
+- `docs/task-6-ci-evidence.md` only
