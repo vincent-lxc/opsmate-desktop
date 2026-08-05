@@ -60,6 +60,18 @@ impl Drop for VaultCredentialLease {
 
 /// Idle lock after this duration without key-related native activity.
 pub const VAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+
+/// Pure idle-due check at an explicit evaluation instant (crate-internal).
+///
+/// Uses `checked_duration_since` so callers never need
+/// `Instant::now() - VAULT_IDLE_TIMEOUT` (which panics when the platform
+/// monotonic clock has been up for less than the timeout — e.g. fresh Windows CI).
+/// Not part of the public crate API (`pub mod vault` must not re-export this as `pub`).
+#[inline]
+pub(crate) fn activity_is_idle_due(last_activity: Instant, now: Instant) -> bool {
+    now.checked_duration_since(last_activity)
+        .is_some_and(|elapsed| elapsed >= VAULT_IDLE_TIMEOUT)
+}
 const CLIENT_PATH: &[u8] = b"opsmate-vault-client";
 const INDEX_KEY: &[u8] = b"__opsmate_credential_index__";
 const SALT_LEN: usize = 16;
@@ -293,6 +305,11 @@ pub struct VaultService {
     /// (proves SSH/cutoff ran while Stronghold still unlocked).
     #[cfg(test)]
     fail_next_lifecycle_seal_after_pre_seal: AtomicBool,
+    /// Test-only: override the instant used for idle evaluation (`*_at` / enter_op / due).
+    /// Production always uses real [`Instant::now`]; tests set `last + VAULT_IDLE_TIMEOUT + ε`
+    /// instead of subtracting the timeout from `Instant::now()` (Windows short-uptime panic).
+    #[cfg(test)]
+    idle_now_override: Mutex<Option<Instant>>,
 }
 
 impl VaultService {
@@ -311,7 +328,38 @@ impl VaultService {
             fail_next_lifecycle_seal_before_pre_seal: AtomicBool::new(false),
             #[cfg(test)]
             fail_next_lifecycle_seal_after_pre_seal: AtomicBool::new(false),
+            #[cfg(test)]
+            idle_now_override: Mutex::new(None),
         }
+    }
+
+    /// Instant used for idle-due evaluation. Production: real wall monotonic now.
+    /// Tests may override via [`Self::test_set_idle_now`] without Instant timeout subtraction.
+    #[inline]
+    fn idle_now(&self) -> Instant {
+        #[cfg(test)]
+        {
+            if let Ok(g) = self.idle_now_override.lock() {
+                if let Some(t) = *g {
+                    return t;
+                }
+            }
+        }
+        Instant::now()
+    }
+
+    /// Test-only: evaluate idle as-of this instant (must be `>= last_activity + VAULT_IDLE_TIMEOUT`
+    /// for due cases). Prefer `last_activity + VAULT_IDLE_TIMEOUT + slack` over
+    /// `Instant::now() - VAULT_IDLE_TIMEOUT`.
+    #[cfg(test)]
+    pub fn test_set_idle_now(&self, now: Instant) {
+        *self.idle_now_override.lock().expect("idle_now_override") = Some(now);
+    }
+
+    /// Test-only: clear idle evaluation override (back to real Instant::now).
+    #[cfg(test)]
+    pub fn test_clear_idle_now(&self) {
+        *self.idle_now_override.lock().expect("idle_now_override") = None;
     }
 
     /// Arm a one-shot lifecycle seal error (before pre_seal). cfg(test) only.
@@ -728,12 +776,14 @@ impl VaultService {
     /// **without** refreshing activity. Production idle seal (cutoff-before-seal) is only via
     /// the lifecycle coordinator / watchdog tick.
     fn enter_op(&self) -> Result<OpGuard<'_>, VaultError> {
+        // Production uses real Instant::now via idle_now(); tests may override.
+        let now = self.idle_now();
         // Observe vault without holding the gate.
         {
             let guard = self.lock_inner()?;
             match &*guard {
                 VaultInner::Locked { .. } => return Err(VaultError::Locked),
-                VaultInner::Unlocked(u) if u.last_activity.elapsed() >= VAULT_IDLE_TIMEOUT => {
+                VaultInner::Unlocked(u) if activity_is_idle_due(u.last_activity, now) => {
                     // Fail closed: do not seal here (would bypass SecurityCutoff).
                     return Err(VaultError::Locked);
                 }
@@ -750,7 +800,7 @@ impl VaultService {
                     drop(op);
                     return Err(VaultError::Locked);
                 }
-                VaultInner::Unlocked(u) if u.last_activity.elapsed() >= VAULT_IDLE_TIMEOUT => {
+                VaultInner::Unlocked(u) if activity_is_idle_due(u.last_activity, now) => {
                     // Expired under claim — fail without seal and without touching last_activity.
                     drop(op);
                     return Err(VaultError::Locked);
@@ -788,16 +838,21 @@ impl VaultService {
         }
     }
 
-    /// Read-only: unlocked and last activity older than [`VAULT_IDLE_TIMEOUT`].
-    /// No seal, no SSH, no side effects (for coordinator pre-check only — not authoritative).
-    pub fn idle_timeout_due(&self) -> bool {
+    /// Read-only: unlocked and last activity older than [`VAULT_IDLE_TIMEOUT`] at `now`.
+    /// Internal helper for production wrappers and tests (not public API).
+    fn idle_timeout_due_at(&self, now: Instant) -> bool {
         self.inner
             .lock()
             .map(|g| match &*g {
-                VaultInner::Unlocked(u) => u.last_activity.elapsed() >= VAULT_IDLE_TIMEOUT,
+                VaultInner::Unlocked(u) => activity_is_idle_due(u.last_activity, now),
                 VaultInner::Locked { .. } => false,
             })
             .unwrap_or(false)
+    }
+
+    /// Read-only idle probe using production clock ([`Instant::now`], or test override).
+    pub fn idle_timeout_due(&self) -> bool {
+        self.idle_timeout_due_at(self.idle_now())
     }
 
     /// Read-only unlocked probe for lifecycle (crate-internal).
@@ -808,11 +863,15 @@ impl VaultService {
             .unwrap_or(false)
     }
 
-    /// Idle TOCTOU-safe seal: claim SEALING, recheck unlocked+idle under claim, then
-    /// `pre_seal` (SSH cutoff) only if still due, then seal. If activity refreshed →
-    /// `NotNeeded` with **zero** pre_seal side effects.
-    pub fn seal_if_still_idle_with_pre_seal<F>(
+    /// Idle TOCTOU-safe seal at an explicit evaluation instant (crate-internal).
+    ///
+    /// Production callers use [`Self::seal_if_still_idle_with_pre_seal`] (real now).
+    /// Tests pass `last_activity + VAULT_IDLE_TIMEOUT + slack` instead of constructing a
+    /// past `last_activity` via `Instant::now() - VAULT_IDLE_TIMEOUT`.
+    /// Not part of the public crate API.
+    pub(crate) fn seal_if_still_idle_with_pre_seal_at<F>(
         &self,
+        now: Instant,
         pre_seal: F,
     ) -> Result<SealAttempt, VaultError>
     where
@@ -825,7 +884,7 @@ impl VaultService {
         let still_due = {
             let guard = self.lock_inner()?;
             match &*guard {
-                VaultInner::Unlocked(u) => u.last_activity.elapsed() >= VAULT_IDLE_TIMEOUT,
+                VaultInner::Unlocked(u) => activity_is_idle_due(u.last_activity, now),
                 VaultInner::Locked { .. } => false,
             }
         };
@@ -844,6 +903,21 @@ impl VaultService {
         self.close_all_sessions_before_seal();
         self.seal_vault("idle_timeout")?;
         Ok(SealAttempt::Sealed)
+    }
+
+    /// Idle TOCTOU-safe seal: claim SEALING, recheck unlocked+idle under claim, then
+    /// `pre_seal` (SSH cutoff) only if still due, then seal. If activity refreshed →
+    /// `NotNeeded` with **zero** pre_seal side effects.
+    ///
+    /// Production clock: real [`Instant::now`] via [`Self::idle_now`].
+    pub fn seal_if_still_idle_with_pre_seal<F>(
+        &self,
+        pre_seal: F,
+    ) -> Result<SealAttempt, VaultError>
+    where
+        F: FnOnce(),
+    {
+        self.seal_if_still_idle_with_pre_seal_at(self.idle_now(), pre_seal)
     }
 
     /// Unlocked seal with pre-seal callback under SEALING claim (sleep / exit / wake / user lock).
@@ -1409,11 +1483,15 @@ impl VaultService {
     }
 
     /// Test-only: refresh last_activity while unlocked.
+    ///
+    /// Uses the idle evaluation clock ([`Self::idle_now`]) so a test that advanced
+    /// evaluation time with [`Self::test_set_idle_now`] still sees the refresh as not-due.
     #[cfg(test)]
     pub fn test_touch_activity(&self) {
+        let now = self.idle_now();
         let mut g = self.inner.lock().expect("vault lock");
         if let VaultInner::Unlocked(u) = &mut *g {
-            u.last_activity = Instant::now();
+            u.last_activity = now;
         }
     }
 

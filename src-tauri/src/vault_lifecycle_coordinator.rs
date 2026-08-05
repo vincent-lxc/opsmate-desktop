@@ -13,6 +13,8 @@ use crate::security_cutoff::SecurityCutoff;
 use crate::vault::{SealAttempt, VaultError, VaultService};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+#[cfg(test)]
+use std::time::Instant;
 
 /// Result of a lifecycle evaluation (secret-free).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -78,10 +80,25 @@ impl VaultLifecycleCoordinator {
     }
 
     /// Watchdog tick: TOCTOU-safe idle seal. Pre-seal closes SSH only if still idle under SEALING.
+    ///
+    /// Production uses the vault's real evaluation clock ([`std::time::Instant::now`]).
+    /// Deterministic explicit-time evaluation is a **test-only** seam (`on_idle_tick_at`).
     pub fn on_idle_tick(&self) -> Result<LifecycleTransition, VaultError> {
         self.map_seal_result(
             self.vault
                 .seal_if_still_idle_with_pre_seal(|| self.pre_seal_ssh_cutoff()),
+        )
+    }
+
+    /// Test-only idle seal at an explicit instant (not public API; not compiled in release).
+    ///
+    /// Prefer `last_activity + VAULT_IDLE_TIMEOUT + slack` over
+    /// `Instant::now() - VAULT_IDLE_TIMEOUT` (overflow on short Windows uptime).
+    #[cfg(test)]
+    pub(crate) fn on_idle_tick_at(&self, now: Instant) -> Result<LifecycleTransition, VaultError> {
+        self.map_seal_result(
+            self.vault
+                .seal_if_still_idle_with_pre_seal_at(now, || self.pre_seal_ssh_cutoff()),
         )
     }
 
@@ -137,7 +154,7 @@ mod tests {
     use super::*;
     use crate::auth::AuthStore;
     use crate::security_cutoff::SecurityCutoff;
-    use crate::vault::{VaultService, VAULT_IDLE_TIMEOUT};
+    use crate::vault::{activity_is_idle_due, VaultService, VAULT_IDLE_TIMEOUT};
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering as AtomicOrdering};
     use std::sync::mpsc;
     use std::sync::Arc;
@@ -165,6 +182,13 @@ mod tests {
         let _ = std::fs::remove_file(std::path::PathBuf::from(salt));
     }
 
+    /// Evaluation instant strictly after idle timeout — **add** to last_activity; never
+    /// `Instant::now() - VAULT_IDLE_TIMEOUT` (overflow when monotonic uptime < 15m).
+    fn idle_due_at(last_activity: Instant) -> Instant {
+        last_activity + VAULT_IDLE_TIMEOUT + Duration::from_secs(2)
+    }
+
+    /// Inject unlocked vault; when `idle_elapsed`, set test idle clock to due without Instant sub.
     fn unlocked_pair(
         idle_elapsed: bool,
     ) -> (
@@ -178,16 +202,121 @@ mod tests {
         auth.install_session_for_tests("t", "u", "admin", "sub");
         let vault = Arc::new(VaultService::new(path.clone()));
         let sh = Stronghold::new(&path, vec![0xB1u8; 32]).expect("sh");
-        let last = if idle_elapsed {
-            Instant::now() - VAULT_IDLE_TIMEOUT - Duration::from_secs(2)
-        } else {
-            Instant::now()
-        };
+        let last = Instant::now();
         vault.test_inject_unlocked(sh, auth.auth_binding().unwrap(), path.clone(), last);
+        if idle_elapsed {
+            vault.test_set_idle_now(idle_due_at(last));
+        }
         let cutoff = Arc::new(SecurityCutoff::new());
         cutoff.unlock_vault_for_tests();
         let coord = VaultLifecycleCoordinator::new(vault.clone(), cutoff.clone());
         (coord, vault, cutoff, path)
+    }
+
+    /// Regression: Windows CI run 31017613079 / job 92345694969 panics in std::time when
+    /// tests do `Instant::now() - VAULT_IDLE_TIMEOUT` on short monotonic uptime.
+    #[test]
+    fn idle_due_evaluation_does_not_subtract_timeout_from_instant_now() {
+        let path = temp_path("explicit-now");
+        let auth = AuthStore::new();
+        auth.install_session_for_tests("t", "u", "admin", "sub");
+        let vault = Arc::new(VaultService::new(path.clone()));
+        let sh = Stronghold::new(&path, vec![0xC1u8; 32]).expect("sh");
+        let last = Instant::now();
+        // Addition is always safe; subtraction of 15m from Instant is not on fresh Windows.
+        let now = idle_due_at(last);
+        assert!(activity_is_idle_due(last, now));
+        assert!(!activity_is_idle_due(last, last + Duration::from_secs(60)));
+        vault.test_inject_unlocked(sh, auth.auth_binding().unwrap(), path.clone(), last);
+        let cutoff = Arc::new(SecurityCutoff::new());
+        cutoff.unlock_vault_for_tests();
+        let coord = VaultLifecycleCoordinator::new(vault.clone(), cutoff.clone());
+        assert_eq!(
+            coord.on_idle_tick_at(now).unwrap(),
+            LifecycleTransition::Sealed
+        );
+        assert!(!vault.is_unlocked());
+        assert_eq!(
+            vault.status().unwrap().locked_reason.as_deref(),
+            Some("idle_timeout")
+        );
+        assert_eq!(cutoff.ssh_generation(), 1);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn lifecycle_source_never_subtracts_vault_idle_timeout_from_instant_now() {
+        // Build needle at runtime so this assert line is not a self-hit; ignore comments/docs.
+        let pattern = format!("{}{}{}", "Instant::now()", " - ", "VAULT_IDLE_TIMEOUT");
+        let src = include_str!("vault_lifecycle_coordinator.rs");
+        for (idx, line) in src.lines().enumerate() {
+            let t = line.trim_start();
+            if t.starts_with("//") || t.starts_with("///") || t.starts_with("//!") {
+                continue;
+            }
+            assert!(
+                !line.contains(&pattern),
+                "line {} has forbidden Instant subtraction of idle timeout (Windows CI overflow): {line}",
+                idx + 1
+            );
+        }
+    }
+
+    /// Task 10B: arbitrary-Instant idle seams must not be public crate API (`pub mod vault` re-exports).
+    #[test]
+    fn explicit_time_idle_seams_are_not_public_api() {
+        let vault_src = include_str!("vault/mod.rs");
+        let coord_src = include_str!("vault_lifecycle_coordinator.rs");
+
+        assert!(
+            !vault_src.contains("pub fn activity_is_idle_due"),
+            "activity_is_idle_due must be private or pub(crate), not public API"
+        );
+        assert!(
+            !vault_src.contains("pub fn idle_timeout_due_at"),
+            "idle_timeout_due_at must be private or pub(crate), not public API"
+        );
+        assert!(
+            !vault_src.contains("pub fn seal_if_still_idle_with_pre_seal_at"),
+            "seal_if_still_idle_with_pre_seal_at must be private or pub(crate), not public API"
+        );
+
+        // Unconditional public export of the coordinator seam is forbidden.
+        assert!(
+            !coord_src
+                .lines()
+                .any(|line| line.trim_start().starts_with("pub fn on_idle_tick_at")),
+            "on_idle_tick_at must not be public crate API"
+        );
+        // Must remain as a cfg(test) pub(crate) (or private) seam.
+        assert!(
+            coord_src.contains("on_idle_tick_at"),
+            "on_idle_tick_at test seam must remain available under cfg(test)"
+        );
+        let preceding = coord_src
+            .split("fn on_idle_tick_at")
+            .next()
+            .expect("on_idle_tick_at present")
+            .lines()
+            .rev()
+            .take(10)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            preceding.contains("cfg(test)"),
+            "on_idle_tick_at must be #[cfg(test)] (preceding lines:\n{preceding})"
+        );
+        assert!(
+            coord_src.lines().any(|line| {
+                let t = line.trim_start();
+                t.starts_with("pub(crate) fn on_idle_tick_at")
+                    || t.starts_with("fn on_idle_tick_at")
+            }),
+            "on_idle_tick_at must be pub(crate) or private under cfg(test)"
+        );
     }
 
     #[test]
@@ -213,12 +342,9 @@ mod tests {
         auth.install_session_for_tests("t", "u", "admin", "sub");
         let vault = Arc::new(VaultService::new(path.clone()));
         let sh = Stronghold::new(&path, vec![0xB3u8; 32]).expect("sh");
-        vault.test_inject_unlocked(
-            sh,
-            auth.auth_binding().unwrap(),
-            path.clone(),
-            Instant::now() - VAULT_IDLE_TIMEOUT - Duration::from_secs(2),
-        );
+        let last = Instant::now();
+        vault.test_inject_unlocked(sh, auth.auth_binding().unwrap(), path.clone(), last);
+        let now = idle_due_at(last);
         let cutoff = Arc::new(SecurityCutoff::new());
         cutoff.unlock_vault_for_tests();
 
@@ -227,7 +353,7 @@ mod tests {
         let vault_ref = vault.clone();
         let cutoff_ref = cutoff.clone();
         let attempt = vault
-            .seal_if_still_idle_with_pre_seal(|| {
+            .seal_if_still_idle_with_pre_seal_at(now, || {
                 // Must still be unlocked when pre_seal runs (before Stronghold seal).
                 assert!(
                     vault_ref.is_unlocked(),
@@ -262,14 +388,12 @@ mod tests {
         auth.install_session_for_tests("t", "u", "admin", "sub");
         let vault = Arc::new(VaultService::new(path.clone()));
         let sh = Stronghold::new(&path, vec![0xB4u8; 32]).expect("sh");
-        vault.test_inject_unlocked(
-            sh,
-            auth.auth_binding().unwrap(),
-            path.clone(),
-            Instant::now() - VAULT_IDLE_TIMEOUT - Duration::from_secs(2),
-        );
+        let last = Instant::now();
+        let now = idle_due_at(last);
+        vault.test_inject_unlocked(sh, auth.auth_binding().unwrap(), path.clone(), last);
+        vault.test_set_idle_now(now);
         assert!(vault.idle_timeout_due());
-        // Refresh completes first.
+        // Refresh completes first (aligns last_activity with evaluation clock → not due).
         vault.test_touch_activity();
         assert!(!vault.idle_timeout_due());
 
@@ -300,12 +424,9 @@ mod tests {
         auth.install_session_for_tests("t", "u", "admin", "sub");
         let vault = Arc::new(VaultService::new(path.clone()));
         let sh = Stronghold::new(&path, vec![0xB5u8; 32]).expect("sh");
-        vault.test_inject_unlocked(
-            sh,
-            auth.auth_binding().unwrap(),
-            path.clone(),
-            Instant::now() - VAULT_IDLE_TIMEOUT - Duration::from_secs(2),
-        );
+        let last = Instant::now();
+        vault.test_inject_unlocked(sh, auth.auth_binding().unwrap(), path.clone(), last);
+        vault.test_set_idle_now(idle_due_at(last));
         let cutoff = Arc::new(SecurityCutoff::new());
         cutoff.unlock_vault_for_tests();
         let coord = VaultLifecycleCoordinator::new(vault.clone(), cutoff.clone());
@@ -437,12 +558,9 @@ mod tests {
         auth.install_session_for_tests("t", "u", "admin", "sub");
         let vault = Arc::new(VaultService::new(path.clone()));
         let sh = Stronghold::new(&path, vec![0xB2u8; 32]).expect("sh");
-        vault.test_inject_unlocked(
-            sh,
-            auth.auth_binding().unwrap(),
-            path.clone(),
-            Instant::now() - VAULT_IDLE_TIMEOUT - Duration::from_secs(1),
-        );
+        let last = Instant::now();
+        vault.test_inject_unlocked(sh, auth.auth_binding().unwrap(), path.clone(), last);
+        vault.test_set_idle_now(last + VAULT_IDLE_TIMEOUT + Duration::from_secs(1));
         let cutoff = Arc::new(SecurityCutoff::new());
         cutoff.unlock_vault_for_tests();
         let coord = VaultLifecycleCoordinator::new(vault.clone(), cutoff);
