@@ -99,7 +99,8 @@ wayland-scanner@0.31.11 depends on quick-xml 0.41.0
 |-------|--------|
 | Tool | **Gitleaks v8.30.1** |
 | Scope | Full git history |
-| Commits scanned | **28** |
+| Latest re-run | **2026-08-06**, immediately before repository visibility change |
+| Commits scanned | **31** |
 | Private-key findings | **5** |
 
 ### Classification (all five)
