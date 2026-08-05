@@ -1,0 +1,3 @@
+src-tauri/src/cloud_transport/operations.rs text eol=lf
+contracts/openapi-v1.yaml text eol=lf
+src/cloud/generated-operations.ts text eol=lf

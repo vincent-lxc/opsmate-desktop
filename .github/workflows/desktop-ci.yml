@@ -49,9 +49,9 @@ jobs:
         # Pinned full commit SHA for refs/heads/1.92.0 (not a tag; not @master).
         # Proof: git ls-remote https://github.com/dtolnay/rust-toolchain.git 1.92.0
         #   → 87eb139fed4b08a67bd1fa429a21d1f5d523e03e  refs/heads/1.92.0
+        # This action release hardcodes 1.92.0 — do NOT pass with.toolchain (unexpected input).
         uses: dtolnay/rust-toolchain@87eb139fed4b08a67bd1fa429a21d1f5d523e03e
         with:
-          toolchain: "1.92.0"
           components: rustfmt, clippy
           targets: ${{ matrix.platform == 'macos' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
 
@@ -93,6 +93,11 @@ jobs:
 
       - name: contracts check
         run: npm run contracts:check
+
+      # Required before cargo fmt/clippy/test: tauri::generate_context! needs ../dist
+      # (live failure: macOS job 92294760960, run 31002584367).
+      - name: npm run build:web
+        run: npm run build:web
 
       - name: cargo fmt
         run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check

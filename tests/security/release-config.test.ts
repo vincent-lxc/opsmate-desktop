@@ -10,15 +10,19 @@ import { deflateSync } from "node:zlib";
 import { describe, expect, it } from "vitest";
 import {
   checkDesktopCiWorkflow,
+  checkGitAttributesLfContent,
   checkReleaseConfig,
+  checkRustToolchainActionWithBlock,
   decodePngRgba,
   isPlaceholderPng,
+  requiredGitAttributesRules,
   REQUIRED_ARTIFACT_TOKEN,
   REQUIRED_CI_RUNNERS,
   REQUIRED_CSP,
   REQUIRED_ICON_PNG_DIMS,
   REQUIRED_ICON_REL,
   REQUIRED_IDENTIFIER,
+  REQUIRED_LF_PATHS,
   REQUIRED_LINUX_TAURI_CMD,
   REQUIRED_MAC_TAURI_CMD,
   REQUIRED_RUST_TOOLCHAIN_ACTION,
@@ -26,6 +30,7 @@ import {
   REQUIRED_SCHEMES,
   REQUIRED_TARGETS,
   REQUIRED_WIN_TAURI_CMD,
+  checkGitAttributesLf,
 } from "../../scripts/check-release-config.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -142,9 +147,83 @@ describe("Task 5 release config", () => {
     );
     expect(REQUIRED_WIN_TAURI_CMD).toContain("--bundles nsis");
     expect(REQUIRED_LINUX_TAURI_CMD).toContain("--bundles appimage,deb");
+    expect(REQUIRED_LF_PATHS).toEqual([
+      "src-tauri/src/cloud_transport/operations.rs",
+      "contracts/openapi-v1.yaml",
+      "src/cloud/generated-operations.ts",
+    ]);
 
     const ciErrors = checkDesktopCiWorkflow();
     expect(ciErrors, ciErrors.join("\n")).toEqual([]);
+
+    const lfErrors = checkGitAttributesLf();
+    expect(lfErrors, lfErrors.join("\n")).toEqual([]);
+  });
+
+  it("checkGitAttributesLfContent rejects extra/missing/changed rules (pure, no repo mutate)", () => {
+    const exact = requiredGitAttributesRules().join("\n") + "\n";
+    expect(checkGitAttributesLfContent(exact)).toEqual([]);
+
+    const withComment =
+      "# comment ok\n" + requiredGitAttributesRules().join("\n") + "\n";
+    expect(checkGitAttributesLfContent(withComment)).toEqual([]);
+
+    const extra =
+      requiredGitAttributesRules().join("\n") + "\n* text=auto\n";
+    const extraErr = checkGitAttributesLfContent(extra);
+    expect(extraErr.some((e) => e.includes("extra") || e.includes("exactly"))).toBe(
+      true,
+    );
+
+    const missing = REQUIRED_LF_PATHS.slice(0, 2)
+      .map((p) => `${p} text eol=lf`)
+      .join("\n");
+    expect(checkGitAttributesLfContent(missing).length).toBeGreaterThan(0);
+
+    const changed =
+      "src-tauri/src/cloud_transport/operations.rs text eol=crlf\n" +
+      "contracts/openapi-v1.yaml text eol=lf\n" +
+      "src/cloud/generated-operations.ts text eol=lf\n";
+    expect(checkGitAttributesLfContent(changed).length).toBeGreaterThan(0);
+
+    const dup =
+      requiredGitAttributesRules().join("\n") +
+      "\n" +
+      requiredGitAttributesRules()[0] +
+      "\n";
+    expect(
+      checkGitAttributesLfContent(dup).some((e) => e.includes("duplicate")),
+    ).toBe(true);
+  });
+
+  it("checkRustToolchainActionWithBlock rejects any with.toolchain key (pure)", () => {
+    const good = `
+      - uses: dtolnay/rust-toolchain@87eb139fed4b08a67bd1fa429a21d1f5d523e03e
+        with:
+          components: rustfmt, clippy
+          targets: aarch64-apple-darwin
+      env:
+        RUST_VERSION: "1.92.0"
+    `;
+    expect(checkRustToolchainActionWithBlock(good)).toEqual([]);
+
+    const bad192 = `
+      - uses: dtolnay/rust-toolchain@87eb139fed4b08a67bd1fa429a21d1f5d523e03e
+        with:
+          toolchain: "1.92.0"
+          components: rustfmt, clippy
+    `;
+    expect(checkRustToolchainActionWithBlock(bad192).length).toBeGreaterThan(0);
+
+    const badStable = `
+      - uses: dtolnay/rust-toolchain@87eb139fed4b08a67bd1fa429a21d1f5d523e03e
+        with:
+          toolchain: stable
+          components: rustfmt
+    `;
+    expect(checkRustToolchainActionWithBlock(badStable).length).toBeGreaterThan(
+      0,
+    );
   });
 });
 

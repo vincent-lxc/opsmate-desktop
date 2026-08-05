@@ -18,11 +18,19 @@ export const CAPABILITIES_PATH = resolve(
 );
 /** Task 6 three-platform internal CI workflow. */
 export const DESKTOP_CI_PATH = resolve(ROOT, ".github/workflows/desktop-ci.yml");
+export const GITATTRIBUTES_PATH = resolve(ROOT, ".gitattributes");
 
 /** Required GitHub-hosted runners (exact). */
 export const REQUIRED_CI_RUNNERS = ["macos-14", "windows-2025", "ubuntu-24.04"];
 export const REQUIRED_RUST_VERSION = "1.92.0";
 export const REQUIRED_ARTIFACT_TOKEN = "internal-unsigned";
+
+/** Generated contract outputs that must stay LF on Windows checkout. */
+export const REQUIRED_LF_PATHS = [
+  "src-tauri/src/cloud_transport/operations.rs",
+  "contracts/openapi-v1.yaml",
+  "src/cloud/generated-operations.ts",
+];
 
 /** Required bundle targets for macOS / Windows / Linux installers. */
 export const REQUIRED_TARGETS = ["dmg", "nsis", "appimage", "deb"];
@@ -370,6 +378,7 @@ export function checkDesktopCiWorkflow() {
     "npm ci",
     "npm test",
     "contracts:check",
+    "npm run build:web",
     "cargo fmt",
     "clippy",
     "cargo test",
@@ -377,6 +386,15 @@ export function checkDesktopCiWorkflow() {
     if (!yml.includes(needle)) {
       errors.push(`desktop-ci.yml must run ${needle}`);
     }
+  }
+  // build:web step must run before cargo fmt step (dist for generate_context).
+  // Match the step run line, not comments that mention "cargo fmt".
+  const buildWebIdx = yml.indexOf("run: npm run build:web");
+  const cargoFmtIdx = yml.indexOf("cargo fmt --manifest-path");
+  if (buildWebIdx < 0 || cargoFmtIdx < 0 || buildWebIdx > cargoFmtIdx) {
+    errors.push(
+      "desktop-ci.yml must run npm run build:web before cargo fmt/clippy/test",
+    );
   }
 
   // Exact platform build commands (prevent global four-target bleed on macOS).
@@ -466,6 +484,7 @@ export function checkDesktopCiWorkflow() {
       `desktop-ci.yml must pin full commit SHA ${REQUIRED_RUST_TOOLCHAIN_ACTION}`,
     );
   }
+  errors.push(...checkRustToolchainActionWithBlock(yml));
   // Pinned major actions
   for (const action of [
     "actions/checkout@v4",
@@ -501,6 +520,123 @@ export function checkDesktopCiWorkflow() {
   // Short retention for internal artifacts
   if (!yml.includes("retention-days")) {
     errors.push("desktop-ci.yml must set short artifact retention-days");
+  }
+
+  // .gitattributes LF for contract generator outputs (Windows CRLF drift fix)
+  if (!existsSync(GITATTRIBUTES_PATH)) {
+    errors.push("missing .gitattributes (required for LF contract outputs)");
+  } else {
+    errors.push(
+      ...checkGitAttributesLfContent(readFileSync(GITATTRIBUTES_PATH, "utf8")),
+    );
+  }
+
+  return errors;
+}
+
+/**
+ * Expected exact non-comment .gitattributes rules (order-fixed as REQUIRED_LF_PATHS).
+ * @returns {string[]}
+ */
+export function requiredGitAttributesRules() {
+  return REQUIRED_LF_PATHS.map((p) => `${p} text eol=lf`);
+}
+
+/**
+ * Pure validator: exact normalized non-comment rule set for contract LF paths.
+ * Rejects missing, changed, duplicated, or extra non-comment rules.
+ * @param {string} body
+ * @returns {string[]}
+ */
+export function checkGitAttributesLfContent(body) {
+  const errors = [];
+  const expected = requiredGitAttributesRules();
+  const lines = body.split(/\r?\n/);
+  /** @type {string[]} */
+  const rules = [];
+  for (const raw of lines) {
+    const line = raw.trim();
+    if (!line || line.startsWith("#")) continue;
+    rules.push(line);
+  }
+  if (rules.length !== expected.length) {
+    errors.push(
+      `.gitattributes must contain exactly ${expected.length} non-comment rules (got ${rules.length})`,
+    );
+  }
+  // Exact multiset equality in fixed order
+  for (let i = 0; i < expected.length; i++) {
+    if (rules[i] !== expected[i]) {
+      errors.push(
+        `.gitattributes rule ${i + 1} must be exactly ${JSON.stringify(expected[i])} (got ${JSON.stringify(rules[i] ?? null)})`,
+      );
+    }
+  }
+  // Duplicates
+  const seen = new Set();
+  for (const r of rules) {
+    if (seen.has(r)) {
+      errors.push(`.gitattributes has duplicate rule: ${r}`);
+    }
+    seen.add(r);
+  }
+  // Extra rules not in expected set
+  for (const r of rules) {
+    if (!expected.includes(r)) {
+      errors.push(`.gitattributes has extra/forbidden rule: ${r}`);
+    }
+  }
+  return errors;
+}
+
+/**
+ * File-backed wrapper for .gitattributes gate.
+ * @returns {string[]}
+ */
+export function checkGitAttributesLf() {
+  if (!existsSync(GITATTRIBUTES_PATH)) {
+    return ["missing .gitattributes (required for LF contract outputs)"];
+  }
+  return checkGitAttributesLfContent(readFileSync(GITATTRIBUTES_PATH, "utf8"));
+}
+
+/**
+ * Pure validator: forbid ANY `toolchain:` key under a dtolnay/rust-toolchain `with:` block.
+ * Allows env RUST_VERSION and rustc version greps outside that action with-block.
+ * @param {string} yml
+ * @returns {string[]}
+ */
+export function checkRustToolchainActionWithBlock(yml) {
+  const errors = [];
+  // Split on uses: dtolnay/rust-toolchain@...
+  const re =
+    /uses:\s*dtolnay\/rust-toolchain@[^\s\n]+[^\n]*\n((?:[ \t]+[^\n]*\n)*)/g;
+  let m;
+  let found = 0;
+  while ((m = re.exec(yml)) !== null) {
+    found += 1;
+    const following = m[1] || "";
+    // Only inspect the immediate with: block under this uses line
+    const withMatch = following.match(/^[ \t]+with:\s*\n((?:[ \t]+[^\n]*\n)*)/m);
+    if (!withMatch) continue;
+    const withBody = withMatch[1] || "";
+    if (/^[ \t]+toolchain\s*:/m.test(withBody)) {
+      errors.push(
+        "desktop-ci.yml must not pass any with.toolchain key under dtolnay/rust-toolchain action",
+      );
+    }
+  }
+  if (found === 0 && yml.includes("dtolnay/rust-toolchain")) {
+    // Still scan generically if indentation differs
+    if (
+      /uses:\s*dtolnay\/rust-toolchain@[\s\S]{0,400}?with:[\s\S]{0,200}?^\s+toolchain\s*:/m.test(
+        yml,
+      )
+    ) {
+      errors.push(
+        "desktop-ci.yml must not pass any with.toolchain key under dtolnay/rust-toolchain action",
+      );
+    }
   }
   return errors;
 }
