@@ -686,6 +686,17 @@ impl SessionCloseHandle for EstablishedLocalSsh {
     }
 }
 
+impl EstablishedLocalSsh {
+    /// Fence without protocol disconnect — transfer handle into the 8B3b transport actor.
+    /// Returns `None` if already closed/fenced.
+    pub fn take_handle_for_transport(&self) -> Option<russh::client::Handle<HostKeyPolicyHandler>> {
+        if self.closed.swap(true, Ordering::SeqCst) {
+            return None;
+        }
+        self.handle.lock().unwrap_or_else(|p| p.into_inner()).take()
+    }
+}
+
 /// Successful handshake: secret-free authority retained for `complete_established`
 /// plus a close handle that fences the live russh session.
 pub struct HandshakeResult {
@@ -693,6 +704,8 @@ pub struct HandshakeResult {
     pub connection: Arc<EstablishedLocalSsh>,
     /// Shared one-shot bearer gate (spent after host-key check). Not the transport.
     bearer: Arc<EphemeralBearer>,
+    /// Overall setup deadline start (handshake); transport continues under the same budget.
+    pub setup_started: std::time::Instant,
 }
 
 impl HandshakeResult {
@@ -703,6 +716,28 @@ impl HandshakeResult {
     /// Bearer slot is empty after successful host-key check (pinned or TOFU).
     pub fn bearer_is_spent(&self) -> bool {
         self.bearer.is_spent()
+    }
+
+    /// Split for transport: authority (complete_established) + live handle (actor).
+    /// Does **not** clone bearer or authority; drops spent bearer gate.
+    /// Marks connection fenced so disconnect_now is a no-op (actor owns the handle).
+    pub fn into_transport_parts(
+        self,
+    ) -> Result<
+        (
+            LocalSshConnectAuthority,
+            russh::client::Handle<HostKeyPolicyHandler>,
+            std::time::Instant,
+        ),
+        LocalSshError,
+    > {
+        let handle = self
+            .connection
+            .take_handle_for_transport()
+            .ok_or(LocalSshError::Internal)?;
+        let started = self.setup_started;
+        drop(self.bearer);
+        Ok((self.authority, handle, started))
     }
 }
 
@@ -754,6 +789,7 @@ pub async fn establish_local_ssh_handshake(
     } else {
         deps.overall_timeout
     };
+    let setup_started = std::time::Instant::now();
     let deadline = tokio::time::Instant::now() + timeout;
 
     let expected = AuthBinding {
@@ -844,6 +880,7 @@ pub async fn establish_local_ssh_handshake(
         authority,
         connection: EstablishedLocalSsh::new(handle),
         bearer: bearer_gate,
+        setup_started,
     })
 }
 

@@ -76,6 +76,15 @@ pub enum LocalSshError {
     /// TCP/KEX/connect failed or overall handshake timeout (no host/user/secret).
     #[error("local_ssh_connect_failed")]
     ConnectFailed,
+    /// Session/channel/PTY/shell setup failed (no secret detail).
+    #[error("local_ssh_channel_failed")]
+    ChannelFailed,
+    /// Transport closed or cancelled.
+    #[error("local_ssh_transport_closed")]
+    TransportClosed,
+    /// Bounded command queue full (backpressure fail-closed).
+    #[error("local_ssh_command_queue_full")]
+    CommandQueueFull,
     /// Unexpected internal failure (no secret payload).
     #[error("local_ssh_internal")]
     Internal,
@@ -99,6 +108,9 @@ pub fn map_local_ssh_public(err: LocalSshError) -> &'static str {
         LocalSshError::LocalKnownHostsFailed => "local_ssh_local_known_hosts_failed",
         LocalSshError::AuthenticationFailed => "local_ssh_authentication_failed",
         LocalSshError::ConnectFailed => "local_ssh_connect_failed",
+        LocalSshError::ChannelFailed => "local_ssh_channel_failed",
+        LocalSshError::TransportClosed => "local_ssh_transport_closed",
+        LocalSshError::CommandQueueFull => "local_ssh_command_queue_full",
         LocalSshError::Internal => "local_ssh_internal",
     }
 }
