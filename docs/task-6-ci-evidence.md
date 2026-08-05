@@ -167,3 +167,69 @@ docker run --rm --platform linux/amd64 rust:1.92-bookworm
 
 - `src-tauri/src/local_ssh/transport.rs`
 - `docs/task-6-ci-evidence.md`
+
+---
+
+## Live run — Windows source-contract CRLF (`task_39fdb18d1d00` / `ctx_b2ae79cc9750`)
+
+**Actions run:** https://github.com/vincent-lxc/opsmate-desktop/actions/runs/31005287693
+**Windows job:** `92303595964`
+
+### Exact failures (3)
+
+| Test | Failure mode |
+|------|----------------|
+| `local_ssh::session::tests::production_attach_helper_calls_shared_inner` | `.split("pub fn attach_session_manager_to_vault(\n")` found no match |
+| `vault_os_sleep::tests::no_non_macos_stub_platform_modules_exist` | falsely found `Stub` / related markers |
+| `vault_os_sleep::tests::register_returns_result_and_propagates_try_new` | falsely found `.ok().map` |
+
+### Root cause
+
+Windows CI presents **CRLF** (`\r\n`) for source read via `include_str!` / `fs::read_to_string`. Source-contract helpers used **LF-only** markers:
+
+- `vault_os_sleep::prod_src()` split on `"#[cfg(test)]\nmod tests"` — no match on CRLF → entire file treated as production → test assertion strings (`Stub(`, `.ok().map`) counted as production.
+- session attach split on `"pub fn attach_session_manager_to_vault(\n"` — signature line is `(\r\n` on Windows → `.nth(1)` missing.
+
+Not a production behavior bug. **Not** fixed by broadening `.gitattributes` (existing contract LF rules unchanged).
+
+### Fix (test-only)
+
+- `crate::normalize_source_newlines` (`#[cfg(test)]`, **after** all production items in `lib.rs` so `split("#[cfg(test)]")` contracts still see full prod body)
+- `vault_os_sleep::dispatch_src` normalizes after read
+- `production_attach_helper_calls_shared_inner` normalizes `include_str!("session.rs")`
+
+### RED / GREEN
+
+**RED** (deterministic helpers with equivalent CRLF text):
+
+- `source_contract_crlf_requires_newline_normalization` — without normalize, LF module marker does not split; `Stub(` / `.ok().map` visible
+- `production_attach_signature_marker_requires_crlf_normalization` — LF signature marker misses CRLF text until normalize
+
+**GREEN:** both CRLF regressions + original three tests pass; production code/layout untouched.
+
+### Verification (this dispatch)
+
+| Gate | Result |
+|------|--------|
+| Focused 3 + 2 CRLF regressions | **5 passed** |
+| `cargo clippy --all-targets --all-features -- -D warnings` | **exit 0** |
+| `cargo test --all-targets` | **322 passed**, 1 ignored |
+| `npm test` | **49 passed** |
+| release-config / contracts:check / build:web | **ok** |
+| `git diff --check` | **clean** |
+
+### Explicit non-claims
+
+- No commit / push
+- No broad `.gitattributes` expansion for all `*.rs`
+- No assertion weakening / removal
+- No production attach / os-sleep behavior change
+- Preserves `972b3e6` fairness work and prior CI fixes
+- No claim that Actions run 31005287693 is green until re-run
+
+### Files (this Windows CRLF dispatch)
+
+- `src-tauri/src/lib.rs` (`normalize_source_newlines`, test-only, post-production)
+- `src-tauri/src/vault_os_sleep.rs` (`dispatch_src` normalize + CRLF RED/GREEN test)
+- `src-tauri/src/local_ssh/session.rs` (attach normalize + CRLF signature test)
+- `docs/task-6-ci-evidence.md`

@@ -1451,7 +1451,8 @@ mod tests {
     /// sink wiring (`set_session_lifecycle_sink`) occurs only inside that inner.
     #[test]
     fn production_attach_helper_calls_shared_inner() {
-        let src = include_str!("session.rs");
+        // Normalize CRLF so LF-only signature markers work on Windows CI checkouts.
+        let src = crate::normalize_source_newlines(include_str!("session.rs"));
         // Locate production attach by signature; stop before the test-only wrapper.
         let after_prod_sig = src
             .split("pub fn attach_session_manager_to_vault(\n")
@@ -1487,6 +1488,38 @@ mod tests {
             before_tests.contains("fn attach_session_manager_to_vault_inner("),
             "shared inner must exist"
         );
+    }
+
+    /// CRLF signature line must not match LF-only marker until newlines are normalized.
+    #[test]
+    fn production_attach_signature_marker_requires_crlf_normalization() {
+        let crlf = concat!(
+            "fn other() {}\r\n",
+            "pub fn attach_session_manager_to_vault(\r\n",
+            "    auth: Arc<AuthStore>,\r\n",
+            "    LocalSshSessionManager::new\r\n",
+            "    attach_session_manager_to_vault_inner\r\n",
+            ")\r\n",
+            "/// Test wrapper\r\n",
+            "fn with_rng() {}\r\n",
+        );
+        assert!(
+            crlf.split("pub fn attach_session_manager_to_vault(\n")
+                .nth(1)
+                .is_none(),
+            "LF-only signature marker must miss CRLF source (Windows CI failure mode)"
+        );
+        let src = crate::normalize_source_newlines(crlf);
+        let after = src
+            .split("pub fn attach_session_manager_to_vault(\n")
+            .nth(1)
+            .expect("normalized CRLF must match LF signature marker");
+        let body = after
+            .split("/// Test wrapper")
+            .next()
+            .expect("wrapper marker");
+        assert!(body.contains("LocalSshSessionManager::new"));
+        assert!(body.contains("attach_session_manager_to_vault_inner"));
     }
 
     #[test]

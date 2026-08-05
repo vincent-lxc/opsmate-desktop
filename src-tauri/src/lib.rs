@@ -401,6 +401,16 @@ pub fn run() {
         });
 }
 
+/// Test-only: normalize source text for cross-platform source-contract assertions.
+/// Windows checkouts / CI may present CRLF via `include_str!` or `fs::read_to_string`
+/// while markers in tests are written with LF (`\n`). Placed after production items so
+/// `split("#[cfg(test)]")` source-contract tests still see the full production body.
+/// Does not touch production layout or behavior.
+#[cfg(test)]
+pub(crate) fn normalize_source_newlines(src: &str) -> String {
+    src.replace("\r\n", "\n").replace('\r', "\n")
+}
+
 #[cfg(test)]
 mod tests {
     use super::finalize_vault_unlock;

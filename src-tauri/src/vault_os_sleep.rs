@@ -223,10 +223,12 @@ mod tests {
     }
 
     fn dispatch_src() -> String {
-        std::fs::read_to_string(
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/vault_os_sleep.rs"),
+        crate::normalize_source_newlines(
+            &std::fs::read_to_string(
+                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/vault_os_sleep.rs"),
+            )
+            .expect("vault_os_sleep.rs"),
         )
-        .expect("vault_os_sleep.rs")
     }
 
     /// Production source only (exclude test module; keep `#[cfg(test)]` item helpers).
@@ -237,6 +239,50 @@ mod tests {
             .next()
             .unwrap_or(&dispatch)
             .to_string()
+    }
+
+    /// RED without newline normalization: LF-only module marker fails on CRLF text, so
+    /// "prod" includes the test module and matches assertion strings (Windows CI shape).
+    #[test]
+    fn source_contract_crlf_requires_newline_normalization() {
+        let crlf = concat!(
+            "pub fn register() -> Result<Self, &'static str> {\n",
+            "    // production only\n",
+            "}\r\n",
+            "#[cfg(test)]\r\n",
+            "mod tests {\r\n",
+            "    // assertion strings that must NOT count as production:\r\n",
+            "    // Stub(\r\n",
+            "    // .ok().map(Inner::\r\n",
+            "}\r\n",
+        );
+        // Equivalent to pre-fix prod_src split (LF-only marker) on raw CRLF text.
+        let without = crlf
+            .split("#[cfg(test)]\nmod tests")
+            .next()
+            .expect("split next");
+        assert_eq!(
+            without, crlf,
+            "LF-only marker must not split CRLF source (documents Windows failure mode)"
+        );
+        assert!(
+            without.contains("Stub(") && without.contains(".ok().map(Inner::"),
+            "un-normalized CRLF leaves test assertion strings visible as false positives"
+        );
+        // GREEN path: same marker after normalize excludes the test module.
+        let normalized = crate::normalize_source_newlines(crlf);
+        let prod = normalized
+            .split("#[cfg(test)]\nmod tests")
+            .next()
+            .expect("split after normalize");
+        assert!(
+            !prod.contains("Stub(") && !prod.contains(".ok().map(Inner::"),
+            "normalized prod must exclude test assertion strings"
+        );
+        assert!(
+            prod.contains("pub fn register()"),
+            "normalized prod must retain production body"
+        );
     }
 
     /// RED until Task 4: no non-macOS Stub; real Windows/Linux modules wired.
