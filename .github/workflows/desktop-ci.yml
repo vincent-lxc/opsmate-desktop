@@ -1,0 +1,167 @@
+# Task 6 — three-platform internal CI (unsigned short-retention artifacts only).
+# Does not create public releases, apply code identity, or read private tokens.
+name: desktop-ci
+
+on:
+  push:
+    branches: [main, feat/secure-desktop-foundation]
+  pull_request:
+    branches: [main, feat/secure-desktop-foundation]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  # Pin must match Cargo.toml rust-version and gate REQUIRED_RUST_VERSION.
+  RUST_VERSION: "1.92.0"
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macos-14
+            os: macos-14
+            platform: macos
+          - name: windows-2025
+            os: windows-2025
+            platform: windows
+          - name: ubuntu-24.04
+            os: ubuntu-24.04
+            platform: linux
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: Install Rust ${{ env.RUST_VERSION }}
+        # Pinned full commit SHA for refs/heads/1.92.0 (not a tag; not @master).
+        # Proof: git ls-remote https://github.com/dtolnay/rust-toolchain.git 1.92.0
+        #   → 87eb139fed4b08a67bd1fa429a21d1f5d523e03e  refs/heads/1.92.0
+        uses: dtolnay/rust-toolchain@87eb139fed4b08a67bd1fa429a21d1f5d523e03e
+        with:
+          toolchain: "1.92.0"
+          components: rustfmt, clippy
+          targets: ${{ matrix.platform == 'macos' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            src-tauri/target/
+          key: ${{ runner.os }}-cargo-1.92.0-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-1.92.0-
+
+      - name: Install Ubuntu Tauri system packages
+        if: matrix.platform == 'linux'
+        run: |
+          set -euo pipefail
+          sudo apt-get update -y
+          sudo apt-get install -y \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libssl-dev
+
+      - name: npm ci
+        run: npm ci
+
+      - name: npm test
+        run: npm test
+
+      - name: contracts check
+        run: npm run contracts:check
+
+      - name: cargo fmt
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
+
+      - name: cargo clippy (strict)
+        run: >
+          cargo clippy --manifest-path src-tauri/Cargo.toml
+          --all-targets --all-features -- -D warnings
+
+      - name: cargo test
+        run: cargo test --manifest-path src-tauri/Cargo.toml --all-targets
+
+      - name: Ensure macOS dual Apple targets (universal)
+        if: matrix.platform == 'macos'
+        run: |
+          set -euo pipefail
+          rustup target add aarch64-apple-darwin x86_64-apple-darwin
+          rustc --version | grep -F "1.92.0"
+
+      - name: Tauri build (macOS universal-apple-darwin + dmg only)
+        if: matrix.platform == 'macos'
+        run: |
+          set -euo pipefail
+          rustc --version | grep -F "1.92.0"
+          # Explicit --bundles dmg: global tauri.conf targets must not pull nsis/appimage/deb on macOS.
+          npm run tauri -- build --target universal-apple-darwin --bundles dmg
+
+      - name: Tauri build (Windows NSIS)
+        if: matrix.platform == 'windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustc --version | grep -F "1.92.0"
+          npm run tauri -- build --bundles nsis
+
+      - name: Tauri build (Linux AppImage + deb)
+        if: matrix.platform == 'linux'
+        run: |
+          set -euo pipefail
+          rustc --version | grep -F "1.92.0"
+          npm run tauri -- build --bundles appimage,deb
+
+      - name: Upload internal-unsigned macOS artifacts
+        if: matrix.platform == 'macos'
+        uses: actions/upload-artifact@v4
+        with:
+          name: opsmate-macos-internal-unsigned
+          path: |
+            src-tauri/target/universal-apple-darwin/release/bundle/dmg/*
+          if-no-files-found: error
+          retention-days: 3
+
+      - name: Upload internal-unsigned Windows NSIS artifacts
+        if: matrix.platform == 'windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: opsmate-windows-internal-unsigned
+          path: |
+            src-tauri/target/release/bundle/nsis/*
+          if-no-files-found: error
+          retention-days: 3
+
+      - name: Upload internal-unsigned Linux AppImage + deb artifacts
+        if: matrix.platform == 'linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: opsmate-linux-internal-unsigned
+          path: |
+            src-tauri/target/release/bundle/appimage/*
+            src-tauri/target/release/bundle/deb/*
+          if-no-files-found: error
+          retention-days: 3

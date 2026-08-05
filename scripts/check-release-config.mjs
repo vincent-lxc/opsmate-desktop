@@ -1,7 +1,6 @@
 /**
- * Task 5 — three-platform release config gate (no extra deps).
- * Validates tauri.conf.json bundle targets, identifier, deep-link scheme, icons.
- * Rejects single-color / placeholder PNGs via lightweight RGBA sampling.
+ * Task 5/6 — three-platform release config + branch CI gate (no extra deps).
+ * Validates tauri.conf.json, icons, and .github/workflows/desktop-ci.yml.
  * Exit 0 only when all checks pass. Importable from vitest.
  */
 import { existsSync, readFileSync, statSync } from "node:fs";
@@ -17,6 +16,13 @@ export const CAPABILITIES_PATH = resolve(
   ROOT,
   "src-tauri/capabilities/default.json",
 );
+/** Task 6 three-platform internal CI workflow. */
+export const DESKTOP_CI_PATH = resolve(ROOT, ".github/workflows/desktop-ci.yml");
+
+/** Required GitHub-hosted runners (exact). */
+export const REQUIRED_CI_RUNNERS = ["macos-14", "windows-2025", "ubuntu-24.04"];
+export const REQUIRED_RUST_VERSION = "1.92.0";
+export const REQUIRED_ARTIFACT_TOKEN = "internal-unsigned";
 
 /** Required bundle targets for macOS / Windows / Linux installers. */
 export const REQUIRED_TARGETS = ["dmg", "nsis", "appimage", "deb"];
@@ -319,7 +325,184 @@ export function checkReleaseConfig() {
     }
   }
 
+  // ── Task 6: desktop-ci.yml ─────────────────────────────────────────────
+  errors.push(...checkDesktopCiWorkflow());
+
   return { ok: errors.length === 0, errors, config };
+}
+
+/** Exact platform Tauri CLI invocations required by Task 6 rework. */
+export const REQUIRED_MAC_TAURI_CMD =
+  "npm run tauri -- build --target universal-apple-darwin --bundles dmg";
+export const REQUIRED_WIN_TAURI_CMD = "npm run tauri -- build --bundles nsis";
+export const REQUIRED_LINUX_TAURI_CMD =
+  "npm run tauri -- build --bundles appimage,deb";
+/**
+ * Pinned full commit SHA for dtolnay/rust-toolchain refs/heads/1.92.0
+ * (ls-remote proves 1.92.0 is a branch tip, not an immutable tag).
+ * Rejects @master and floating @1.92.0 branch refs.
+ */
+export const REQUIRED_RUST_TOOLCHAIN_ACTION =
+  "dtolnay/rust-toolchain@87eb139fed4b08a67bd1fa429a21d1f5d523e03e";
+
+/**
+ * Static requirements for three-platform branch CI (no YAML parser dep).
+ * @returns {string[]}
+ */
+export function checkDesktopCiWorkflow() {
+  const errors = [];
+  if (!existsSync(DESKTOP_CI_PATH)) {
+    errors.push("missing .github/workflows/desktop-ci.yml");
+    return errors;
+  }
+  const yml = readFileSync(DESKTOP_CI_PATH, "utf8");
+
+  for (const runner of REQUIRED_CI_RUNNERS) {
+    if (!yml.includes(runner)) {
+      errors.push(`desktop-ci.yml must use runner ${runner}`);
+    }
+  }
+  if (!yml.includes(REQUIRED_RUST_VERSION)) {
+    errors.push(`desktop-ci.yml must pin Rust ${REQUIRED_RUST_VERSION}`);
+  }
+  // Core npm/cargo gates
+  for (const needle of [
+    "npm ci",
+    "npm test",
+    "contracts:check",
+    "cargo fmt",
+    "clippy",
+    "cargo test",
+  ]) {
+    if (!yml.includes(needle)) {
+      errors.push(`desktop-ci.yml must run ${needle}`);
+    }
+  }
+
+  // Exact platform build commands (prevent global four-target bleed on macOS).
+  if (!yml.includes(REQUIRED_MAC_TAURI_CMD)) {
+    errors.push(
+      `desktop-ci.yml must contain exact macOS command: ${REQUIRED_MAC_TAURI_CMD}`,
+    );
+  }
+  if (!yml.includes(REQUIRED_WIN_TAURI_CMD)) {
+    errors.push(
+      `desktop-ci.yml must contain exact Windows command: ${REQUIRED_WIN_TAURI_CMD}`,
+    );
+  }
+  if (!yml.includes(REQUIRED_LINUX_TAURI_CMD)) {
+    errors.push(
+      `desktop-ci.yml must contain exact Linux command: ${REQUIRED_LINUX_TAURI_CMD}`,
+    );
+  }
+
+  if (!yml.includes(REQUIRED_ARTIFACT_TOKEN)) {
+    errors.push(
+      `desktop-ci.yml artifact names must contain ${REQUIRED_ARTIFACT_TOKEN}`,
+    );
+  }
+
+  // All upload-artifact steps must fail the job if bundles are missing.
+  const uploadBlocks = yml.split("actions/upload-artifact@");
+  if (uploadBlocks.length < 4) {
+    // header + 3 uses
+    errors.push(
+      "desktop-ci.yml must use actions/upload-artifact three times (mac/win/linux)",
+    );
+  }
+  const ifNoFiles = [...yml.matchAll(/if-no-files-found:\s*(\w+)/g)].map(
+    (m) => m[1],
+  );
+  if (ifNoFiles.length < 3) {
+    errors.push(
+      "desktop-ci.yml must set if-no-files-found on all three artifact uploads",
+    );
+  }
+  for (const v of ifNoFiles) {
+    if (v !== "error") {
+      errors.push(
+        `desktop-ci.yml if-no-files-found must be error (got ${v})`,
+      );
+    }
+  }
+  if (yml.includes("if-no-files-found: warn")) {
+    errors.push("desktop-ci.yml must not use if-no-files-found: warn");
+  }
+
+  // Security / non-goals
+  if (!yml.includes("contents: read")) {
+    errors.push("desktop-ci.yml must set permissions contents: read");
+  }
+  const forbidden = [
+    /softprops\/action-gh-release/i,
+    /actions\/create-release/i,
+    /gh release create/i,
+    /notariz/i,
+    /codesign/i,
+    /signpath/i,
+    /apple-actions\/import-codesign/i,
+    /\$\{\{\s*secrets\./i,
+  ];
+  for (const re of forbidden) {
+    if (re.test(yml)) {
+      errors.push(
+        `desktop-ci.yml must not invoke release/signing/secrets (${re})`,
+      );
+    }
+  }
+  // Reject mutable / floating toolchain action refs (branch tips, not commit SHAs).
+  if (/dtolnay\/rust-toolchain@master\b/.test(yml)) {
+    errors.push(
+      "desktop-ci.yml must not use mutable dtolnay/rust-toolchain@master",
+    );
+  }
+  if (/dtolnay\/rust-toolchain@1\.92\.0\b/.test(yml)) {
+    errors.push(
+      "desktop-ci.yml must not use floating dtolnay/rust-toolchain@1.92.0 branch ref; pin full commit SHA",
+    );
+  }
+  if (!yml.includes(REQUIRED_RUST_TOOLCHAIN_ACTION)) {
+    errors.push(
+      `desktop-ci.yml must pin full commit SHA ${REQUIRED_RUST_TOOLCHAIN_ACTION}`,
+    );
+  }
+  // Pinned major actions
+  for (const action of [
+    "actions/checkout@v4",
+    "actions/setup-node@v4",
+    "actions/cache@v4",
+    "actions/upload-artifact@v4",
+  ]) {
+    if (!yml.includes(action)) {
+      errors.push(`desktop-ci.yml must pin action ${action}`);
+    }
+  }
+  // Real npm cache via setup-node (not a no-op)
+  if (!/cache:\s*npm/.test(yml)) {
+    errors.push(
+      "desktop-ci.yml setup-node must enable cache: npm (real dependency cache)",
+    );
+  }
+  // Cargo cache
+  if (!yml.includes("actions/cache@v4") || !yml.toLowerCase().includes("cargo")) {
+    errors.push("desktop-ci.yml must cache Cargo artifacts");
+  }
+  // Ubuntu system packages for Tauri
+  for (const pkg of [
+    "libwebkit2gtk",
+    "libgtk-3-dev",
+    "librsvg2-dev",
+    "patchelf",
+  ]) {
+    if (!yml.includes(pkg)) {
+      errors.push(`desktop-ci.yml Ubuntu job must install ${pkg}*`);
+    }
+  }
+  // Short retention for internal artifacts
+  if (!yml.includes("retention-days")) {
+    errors.push("desktop-ci.yml must set short artifact retention-days");
+  }
+  return errors;
 }
 
 const isMain =

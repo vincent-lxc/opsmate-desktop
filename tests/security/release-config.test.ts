@@ -9,15 +9,23 @@ import { fileURLToPath } from "node:url";
 import { deflateSync } from "node:zlib";
 import { describe, expect, it } from "vitest";
 import {
+  checkDesktopCiWorkflow,
   checkReleaseConfig,
   decodePngRgba,
   isPlaceholderPng,
+  REQUIRED_ARTIFACT_TOKEN,
+  REQUIRED_CI_RUNNERS,
   REQUIRED_CSP,
   REQUIRED_ICON_PNG_DIMS,
   REQUIRED_ICON_REL,
   REQUIRED_IDENTIFIER,
+  REQUIRED_LINUX_TAURI_CMD,
+  REQUIRED_MAC_TAURI_CMD,
+  REQUIRED_RUST_TOOLCHAIN_ACTION,
+  REQUIRED_RUST_VERSION,
   REQUIRED_SCHEMES,
   REQUIRED_TARGETS,
+  REQUIRED_WIN_TAURI_CMD,
 } from "../../scripts/check-release-config.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -115,6 +123,28 @@ describe("Task 5 release config", () => {
       expect(result.errors, result.errors.join("\n")).toEqual([]);
     }
     expect(result.ok).toBe(true);
+  });
+
+  it("desktop-ci.yml exists with three runners, Rust 1.92.0, gates, and internal-unsigned artifacts", () => {
+    expect(REQUIRED_CI_RUNNERS).toEqual([
+      "macos-14",
+      "windows-2025",
+      "ubuntu-24.04",
+    ]);
+    expect(REQUIRED_RUST_VERSION).toBe("1.92.0");
+    expect(REQUIRED_ARTIFACT_TOKEN).toBe("internal-unsigned");
+    expect(REQUIRED_RUST_TOOLCHAIN_ACTION).toBe(
+      "dtolnay/rust-toolchain@87eb139fed4b08a67bd1fa429a21d1f5d523e03e",
+    );
+    expect(REQUIRED_RUST_TOOLCHAIN_ACTION).not.toMatch(/@(master|1\.92\.0)$/);
+    expect(REQUIRED_MAC_TAURI_CMD).toContain(
+      "--target universal-apple-darwin --bundles dmg",
+    );
+    expect(REQUIRED_WIN_TAURI_CMD).toContain("--bundles nsis");
+    expect(REQUIRED_LINUX_TAURI_CMD).toContain("--bundles appimage,deb");
+
+    const ciErrors = checkDesktopCiWorkflow();
+    expect(ciErrors, ciErrors.join("\n")).toEqual([]);
   });
 });
 
