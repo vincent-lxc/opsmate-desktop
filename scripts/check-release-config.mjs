@@ -1681,6 +1681,19 @@ export function checkDesktopReleaseWorkflowContent(yml) {
     errors.push(
       `desktop-release.yml job 'linux' must upload ${ARTIFACT_LINUX} after build`,
     );
+  } else {
+    const up = linSteps[linUpload];
+    if (
+      !/\.AppImage\b/.test(up) ||
+      !/\.deb\b/.test(up) ||
+      /^\s*path:\s*[^|\n]*\/$/m.test(up) ||
+      /appimage\/\*(?!\.AppImage)/i.test(up) ||
+      /deb\/\*(?!\.deb)/i.test(up)
+    ) {
+      errors.push(
+        "desktop-release.yml Linux artifact upload must include only final installers (*.AppImage and *.deb), not AppDir/build-tree contents",
+      );
+    }
   }
 
   // Release job lineage
@@ -1730,12 +1743,17 @@ export function checkDesktopReleaseWorkflowContent(yml) {
         if (s.includes(name)) downloads.add(name);
       }
     }
-    // Recursive flatten staging: find -type f + release-assets + both active roots + collision.
+    // Recursive flatten staging: installer whitelist + release-assets + both roots + collision.
     if (
       /\bfind\b/.test(s) &&
       /-type\s+f/.test(s) &&
       /release-assets/.test(s) &&
       activeReleaseArtifacts.every((name) => s.includes(name)) &&
+      /\.dmg\b/.test(s) &&
+      /\.AppImage\b/.test(s) &&
+      /\.deb\b/.test(s) &&
+      /\bcase\b/.test(s) &&
+      /\bcontinue\b/.test(s) &&
       (/collision/i.test(s) ||
         /already staged/i.test(s) ||
         /\[\[\s*-e\s+/.test(s) ||
@@ -1784,7 +1802,7 @@ export function checkDesktopReleaseWorkflowContent(yml) {
 
   if (stageIdx < 0) {
     errors.push(
-      "desktop-release.yml job 'release' must stage recursive regular files from both active artifact roots into release-assets with collision detection (find -type f)",
+      "desktop-release.yml release staging must whitelist final installer extensions (.dmg, .AppImage, .deb) while staging recursive regular files from both active artifact roots with collision detection",
     );
   } else if (lastDl >= 0 && stageIdx < lastDl) {
     errors.push(

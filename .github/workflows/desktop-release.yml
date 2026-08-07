@@ -193,7 +193,7 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: opsmate-macos-signed-notarized
-          path: src-tauri/target/universal-apple-darwin/release/bundle/dmg/*
+          path: src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
           if-no-files-found: error
           retention-days: 14
 
@@ -403,8 +403,8 @@ jobs:
         with:
           name: opsmate-linux-release
           path: |
-            src-tauri/target/release/bundle/appimage/*
-            src-tauri/target/release/bundle/deb/*
+            src-tauri/target/release/bundle/appimage/*.AppImage
+            src-tauri/target/release/bundle/deb/*.deb
           if-no-files-found: error
           retention-days: 14
 
@@ -442,6 +442,7 @@ jobs:
 
           stage_platform() {
             local root="$1"
+            local platform="$2"
             local count=0
             if [[ ! -d "${root}" ]]; then
               echo "missing artifact root: ${root}" >&2
@@ -449,6 +450,10 @@ jobs:
             fi
             # Deterministic walk: sorted paths, regular files only (no dirs / symlinks as assets).
             while IFS= read -r -d '' f; do
+              case "${platform}:${f}" in
+                macos:*.dmg|linux:*.AppImage|linux:*.deb) ;;
+                *) continue ;;
+              esac
               local base
               base="$(basename -- "${f}")"
               local dest="${STAGE_DIR}/${base}"
@@ -466,8 +471,8 @@ jobs:
             echo "staged ${count} file(s) from ${root}"
           }
 
-          stage_platform "opsmate-macos-signed-notarized"
-          stage_platform "opsmate-linux-release"
+          stage_platform "opsmate-macos-signed-notarized" macos
+          stage_platform "opsmate-linux-release" linux
 
       - name: Compute SHA256SUMS
         run: |

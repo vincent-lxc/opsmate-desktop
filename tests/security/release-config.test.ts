@@ -1236,7 +1236,9 @@ jobs:
       - uses: ${upload}
         with:
           name: ${ARTIFACT_LINUX}
-          path: bundle/
+          path: |
+            bundle/appimage/*.AppImage
+            bundle/deb/*.deb
   release:
     needs: [macos, linux]
     runs-on: ubuntu-24.04
@@ -1259,8 +1261,13 @@ jobs:
           mkdir -p "\${STAGE_DIR}"
           stage_platform() {
             local root="\$1"
+            local platform="\$2"
             local count=0
             while IFS= read -r -d '' f; do
+              case "\${platform}:\${f}" in
+                macos:*.dmg|linux:*.AppImage|linux:*.deb) ;;
+                *) continue ;;
+              esac
               local base dest
               base="\$(basename -- "\${f}")"
               dest="\${STAGE_DIR}/\${base}"
@@ -1276,8 +1283,8 @@ jobs:
               exit 1
             fi
           }
-          stage_platform "${ARTIFACT_MACOS}"
-          stage_platform "${ARTIFACT_LINUX}"
+          stage_platform "${ARTIFACT_MACOS}" macos
+          stage_platform "${ARTIFACT_LINUX}" linux
       - run: |
           set -euo pipefail
           mapfile -d '' -t files < <(find release-assets -type f -print0 | sort -z)
@@ -1534,6 +1541,30 @@ describe("Task 8A desktop signed-release controls", () => {
     errs = checkDesktopReleaseWorkflowContent(yml);
     expect(
       errs.some((e) => /publish staged release-assets/i.test(e)),
+    ).toBe(true);
+  });
+
+  it("requires installer-only Linux uploads and release staging", () => {
+    const valid = signedReleaseHappyPathYaml();
+
+    const unsafeUpload = valid.replace(
+      "          path: |\n            bundle/appimage/*.AppImage\n            bundle/deb/*.deb",
+      "          path: bundle/",
+    );
+    expect(
+      checkDesktopReleaseWorkflowContent(unsafeUpload).some((e) =>
+        /Linux artifact upload must include only final installers/i.test(e),
+      ),
+    ).toBe(true);
+
+    const unsafeStage = valid.replace(
+      `              case "\${platform}:\${f}" in\n                macos:*.dmg|linux:*.AppImage|linux:*.deb) ;;\n                *) continue ;;\n              esac\n`,
+      "",
+    );
+    expect(
+      checkDesktopReleaseWorkflowContent(unsafeStage).some((e) =>
+        /release staging must whitelist final installer extensions/i.test(e),
+      ),
     ).toBe(true);
   });
   it("rejects cross-job Apple secrets and environment only on one job", () => {
