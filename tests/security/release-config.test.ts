@@ -1293,6 +1293,7 @@ jobs:
           set -euo pipefail
           mapfile -d '' -t files < <(find release-assets -type f -print0 | sort -z)
           gh release create "\$GITHUB_REF_NAME" \
+            --repo "\$GITHUB_REPOSITORY" \
             --notes "Signed and notarized macOS DMG; Linux AppImage+deb. Windows is not included." \
             --prerelease -- "\${files[@]}" SHA256SUMS
 `;
@@ -1567,6 +1568,20 @@ describe("Task 8A desktop signed-release controls", () => {
       ),
     ).toBe(true);
   });
+
+  it("requires an explicit repository for release creation without checkout", () => {
+    const unsafe = signedReleaseHappyPathYaml().replace(
+      '--repo "$GITHUB_REPOSITORY"',
+      "",
+    );
+    expect(unsafe).not.toContain("--repo");
+    expect(
+      checkDesktopReleaseWorkflowContent(unsafe).some((e) =>
+        /gh release create must set --repo/i.test(e),
+      ),
+    ).toBe(true);
+  });
+
   it("rejects cross-job Apple secrets and environment only on one job", () => {
     let yml = signedReleaseHappyPathYaml().replace(
       /environment: desktop-release\n/g,
