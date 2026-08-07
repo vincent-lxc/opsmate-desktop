@@ -1173,8 +1173,8 @@ jobs:
           path: src-tauri/target
           key: cargo-mac
       - run: npm run tauri -- build --target universal-apple-darwin --bundles dmg
-      - run: codesign --verify --deep --strict out.app
-      - run: spctl --assess --type execute out.app
+      - run: hdiutil attach out.dmg -readonly -nobrowse -mountpoint mount && codesign --verify --deep --strict mount/OpsMate.app && hdiutil detach mount
+      - run: spctl --assess --type install out.dmg
       - run: xcrun stapler validate out.dmg
       - uses: ${upload}
         with:
@@ -1444,8 +1444,8 @@ describe("Task 8A desktop signed-release controls", () => {
       "APPLE_CERTIFICATE: unused",
     );
     yml = yml.replace(
-      "- run: codesign --verify --deep --strict out.app",
-      "- run: echo ${{ secrets.APPLE_CERTIFICATE }} && codesign --verify --deep --strict out.app",
+      "codesign --verify --deep --strict mount/OpsMate.app",
+      "echo ${{ secrets.APPLE_CERTIFICATE }} && codesign --verify --deep --strict mount/OpsMate.app",
     );
     const errs = checkDesktopReleaseWorkflowContent(yml);
     expect(
@@ -1623,20 +1623,42 @@ describe("Task 8A desktop signed-release controls", () => {
     expect(errs.some((e) => /must not reference unsigned/i.test(e))).toBe(true);
   });
 
+  it("requires codesign and Gatekeeper verification against the stapled DMG", () => {
+    let yml = signedReleaseHappyPathYaml().replace(
+      "hdiutil attach out.dmg -readonly -nobrowse -mountpoint mount && codesign --verify --deep --strict mount/OpsMate.app && hdiutil detach mount",
+      "codesign --verify --deep --strict out.app",
+    );
+    let errs = checkDesktopReleaseWorkflowContent(yml);
+    expect(
+      errs.some((e) => /codesign.*mount.*DMG/i.test(e)),
+      errs.join("\n"),
+    ).toBe(true);
+
+    yml = signedReleaseHappyPathYaml().replace(
+      "spctl --assess --type install out.dmg",
+      "spctl --assess --type execute out.app",
+    );
+    errs = checkDesktopReleaseWorkflowContent(yml);
+    expect(
+      errs.some((e) => /Gatekeeper.*DMG.*type install/i.test(e)),
+      errs.join("\n"),
+    ).toBe(true);
+  });
+
   it("rejects upload before macos verification order and forbidden on: events", () => {
     let yml = signedReleaseHappyPathYaml();
     // put upload before ordered verify steps (after setup-node + build)
     yml = yml.replace(
       new RegExp(
-        String.raw`- run: npm run tauri -- build --target universal-apple-darwin --bundles dmg\n      - run: codesign --verify --deep --strict out.app\n      - run: spctl --assess --type execute out.app\n      - run: xcrun stapler validate out.dmg\n      - uses: actions\/upload-artifact@${REQUIRED_ACTIONS_UPLOAD_ARTIFACT_SHA}\n        with:\n          name: opsmate-macos-signed-notarized\n          path: out.dmg\n`,
+        String.raw`- run: npm run tauri -- build --target universal-apple-darwin --bundles dmg\n      - run: hdiutil attach out.dmg -readonly -nobrowse -mountpoint mount && codesign --verify --deep --strict mount/OpsMate.app && hdiutil detach mount\n      - run: spctl --assess --type install out.dmg\n      - run: xcrun stapler validate out.dmg\n      - uses: actions\/upload-artifact@${REQUIRED_ACTIONS_UPLOAD_ARTIFACT_SHA}\n        with:\n          name: opsmate-macos-signed-notarized\n          path: out.dmg\n`,
       ),
       `- run: npm run tauri -- build --target universal-apple-darwin --bundles dmg
       - uses: ${REQUIRED_ACTIONS_UPLOAD_ARTIFACT}
         with:
           name: ${ARTIFACT_MACOS}
           path: out.dmg
-      - run: codesign --verify --deep --strict out.app
-      - run: spctl --assess --type execute out.app
+      - run: hdiutil attach out.dmg -readonly -nobrowse -mountpoint mount && codesign --verify --deep --strict mount/OpsMate.app && hdiutil detach mount
+      - run: spctl --assess --type install out.dmg
       - run: xcrun stapler validate out.dmg
 `,
     );
@@ -1647,8 +1669,8 @@ describe("Task 8A desktop signed-release controls", () => {
 
     // Reorder: spctl before codesign must fail order check
     yml = signedReleaseHappyPathYaml().replace(
-      "- run: codesign --verify --deep --strict out.app\n      - run: spctl --assess --type execute out.app\n",
-      "- run: spctl --assess --type execute out.app\n      - run: codesign --verify --deep --strict out.app\n",
+      "- run: hdiutil attach out.dmg -readonly -nobrowse -mountpoint mount && codesign --verify --deep --strict mount/OpsMate.app && hdiutil detach mount\n      - run: spctl --assess --type install out.dmg\n",
+      "- run: spctl --assess --type install out.dmg\n      - run: hdiutil attach out.dmg -readonly -nobrowse -mountpoint mount && codesign --verify --deep --strict mount/OpsMate.app && hdiutil detach mount\n",
     );
     errs = checkDesktopReleaseWorkflowContent(yml);
     expect(

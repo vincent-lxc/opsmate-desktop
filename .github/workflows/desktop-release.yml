@@ -161,16 +161,25 @@ jobs:
       - name: codesign verify
         run: |
           set -euo pipefail
-          APP="$(find src-tauri/target/universal-apple-darwin/release/bundle/macos -name '*.app' -type d | head -1)"
+          DMG="$(find src-tauri/target/universal-apple-darwin/release/bundle/dmg -name '*.dmg' -type f | head -1)"
+          test -n "$DMG"
+          MOUNT_DIR="$(mktemp -d "$RUNNER_TEMP/opsmate-dmg.XXXXXX")"
+          cleanup_mount() {
+            hdiutil detach "$MOUNT_DIR" -quiet || true
+            rmdir "$MOUNT_DIR" || true
+          }
+          trap cleanup_mount EXIT
+          hdiutil attach "$DMG" -readonly -nobrowse -mountpoint "$MOUNT_DIR"
+          APP="$(find "$MOUNT_DIR" -maxdepth 1 -name '*.app' -type d | head -1)"
           test -n "$APP"
           codesign --verify --deep --strict --verbose=2 "$APP"
 
       - name: spctl Gatekeeper assess
         run: |
           set -euo pipefail
-          APP="$(find src-tauri/target/universal-apple-darwin/release/bundle/macos -name '*.app' -type d | head -1)"
-          test -n "$APP"
-          spctl --assess --type execute --verbose=4 "$APP"
+          DMG="$(find src-tauri/target/universal-apple-darwin/release/bundle/dmg -name '*.dmg' -type f | head -1)"
+          test -n "$DMG"
+          spctl --assess --type install --verbose=4 "$DMG"
 
       - name: stapler validate DMG
         run: |

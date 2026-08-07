@@ -1460,6 +1460,29 @@ export function checkDesktopReleaseWorkflowContent(yml) {
       "desktop-release.yml job 'macos' must order codesign then spctl then stapler validate",
     );
   }
+  if (codesignIdx >= 0) {
+    const codesignStep = macSteps[codesignIdx];
+    if (
+      !/hdiutil\s+attach/i.test(codesignStep) ||
+      !/hdiutil\s+detach/i.test(codesignStep) ||
+      !/(?:\.dmg\b|\$(?:\{DMG\}|DMG\b))/i.test(codesignStep)
+    ) {
+      errors.push(
+        "desktop-release.yml job 'macos' codesign verification must mount the stapled DMG and verify the app from that mounted volume",
+      );
+    }
+  }
+  if (spctlIdx >= 0) {
+    const spctlStep = macSteps[spctlIdx];
+    if (
+      !/--type\s+install\b/i.test(spctlStep) ||
+      !/(?:\.dmg\b|\$(?:\{DMG\}|DMG\b))/i.test(spctlStep)
+    ) {
+      errors.push(
+        "desktop-release.yml job 'macos' Gatekeeper verification must assess the DMG with --type install",
+      );
+    }
+  }
   if (macUploadIdx < 0) {
     errors.push(
       `desktop-release.yml job 'macos' must upload-artifact name ${ARTIFACT_MACOS}`,
