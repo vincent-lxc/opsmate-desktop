@@ -25,13 +25,12 @@ jobs:
     runs-on: macos-14
     environment: desktop-release
     env:
-      # Apple signing / notarization — mapped via env only (never in run: scripts).
+      # Apple signing — mapped via env only (never in run: scripts).
+      # Notarization credentials are scoped to the explicit notarytool steps below
+      # so Tauri cannot hide an unbounded notarization wait inside `tauri build`.
       APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
       APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
       APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-      APPLE_ID: ${{ secrets.APPLE_ID }}
-      APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
     steps:
       - name: Checkout
         # actions/checkout@v7
@@ -94,12 +93,70 @@ jobs:
           rustup target add aarch64-apple-darwin x86_64-apple-darwin
           rustc --version | grep -F "1.92.0"
 
-      - name: Tauri build signed universal DMG
-        # APPLE_* env vars drive Tauri automatic codesign + notarization.
+      - name: Tauri build signed universal DMG (no automatic notarization)
+        timeout-minutes: 45
+        # Certificate env vars drive Tauri codesigning. Notarization credentials
+        # are deliberately absent so this step cannot wait on Apple's service.
         run: |
           set -euo pipefail
           rustc --version | grep -F "1.92.0"
           npm run tauri -- build --target universal-apple-darwin --bundles dmg
+
+      - name: Submit DMG to Apple notarization
+        id: notarization_submission
+        timeout-minutes: 10
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          DMG="$(find src-tauri/target/universal-apple-darwin/release/bundle/dmg -name '*.dmg' -type f | head -1)"
+          test -n "$DMG"
+          SUBMIT_JSON="$RUNNER_TEMP/notary-submit.json"
+          xcrun notarytool submit "$DMG" \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --output-format json > "$SUBMIT_JSON"
+          SUBMISSION_ID="$(plutil -extract id raw -o - "$SUBMIT_JSON")"
+          test -n "$SUBMISSION_ID"
+          echo "Apple notarization submission: $SUBMISSION_ID"
+          echo "submission_id=$SUBMISSION_ID" >> "$GITHUB_OUTPUT"
+          echo "Apple notarization submission: $SUBMISSION_ID" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Wait for Apple notarization
+        timeout-minutes: 35
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_NOTARIZATION_SUBMISSION_ID: ${{ steps.notarization_submission.outputs.submission_id }}
+        run: |
+          set -euo pipefail
+          WAIT_JSON="$RUNNER_TEMP/notary-wait.json"
+          if ! xcrun notarytool wait "$APPLE_NOTARIZATION_SUBMISSION_ID" \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --timeout 30m \
+            --output-format json > "$WAIT_JSON"; then
+            xcrun notarytool log "$APPLE_NOTARIZATION_SUBMISSION_ID" \
+              --apple-id "$APPLE_ID" \
+              --password "$APPLE_PASSWORD" \
+              --team-id "$APPLE_TEAM_ID" || true
+            exit 1
+          fi
+          STATUS="$(plutil -extract status raw -o - "$WAIT_JSON")"
+          echo "Apple notarization status: $STATUS"
+          test "$STATUS" = "Accepted"
+
+      - name: Staple notarization ticket to DMG
+        run: |
+          set -euo pipefail
+          DMG="$(find src-tauri/target/universal-apple-darwin/release/bundle/dmg -name '*.dmg' -type f | head -1)"
+          test -n "$DMG"
+          xcrun stapler staple "$DMG"
 
       - name: codesign verify
         run: |
@@ -131,7 +188,9 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  # Temporarily disabled for desktop-v0.1.1; keep the reviewed SignPath path intact.
   windows:
+    if: ${{ false }}
     runs-on: windows-2025
     environment: desktop-release
     steps:
@@ -341,7 +400,7 @@ jobs:
           retention-days: 14
 
   release:
-    needs: [macos, windows, linux]
+    needs: [macos, linux]
     runs-on: ubuntu-24.04
     environment: desktop-release
     permissions:
@@ -356,13 +415,6 @@ jobs:
           name: opsmate-macos-signed-notarized
           path: opsmate-macos-signed-notarized
 
-      - name: Download Windows signed
-        # actions/download-artifact@v8.0.1 (using: node24; pin full tag commit SHA)
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
-        with:
-          name: opsmate-windows-signed
-          path: opsmate-windows-signed
-
       - name: Download Linux release
         # actions/download-artifact@v8.0.1 (using: node24; pin full tag commit SHA)
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
@@ -370,7 +422,7 @@ jobs:
           name: opsmate-linux-release
           path: opsmate-linux-release
 
-      # Flatten nested artifact trees (Linux keeps appimage/ + deb/; Mac/Windows may nest too).
+      # Flatten nested artifact trees (Linux keeps appimage/ + deb/; macOS may nest too).
       # Never pass directories to sha256sum/gh; copy regular files only with collision detection.
       - name: Stage release assets (recursive, fail-closed)
         run: |
@@ -406,7 +458,6 @@ jobs:
           }
 
           stage_platform "opsmate-macos-signed-notarized"
-          stage_platform "opsmate-windows-signed"
           stage_platform "opsmate-linux-release"
 
       - name: Compute SHA256SUMS
@@ -431,7 +482,7 @@ jobs:
           fi
           gh release create "$GITHUB_REF_NAME" \
             --title "$GITHUB_REF_NAME" \
-            --notes "OpsMate Desktop pre-release $GITHUB_REF_NAME (signed macOS/Windows; Linux AppImage+deb)." \
+            --notes "OpsMate Desktop pre-release $GITHUB_REF_NAME (signed and notarized macOS DMG; Linux AppImage+deb; Windows is not included)." \
             --prerelease \
             -- \
             "${files[@]}" \

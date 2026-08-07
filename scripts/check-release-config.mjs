@@ -1225,6 +1225,12 @@ export function checkBuildJobNodeVersion(jobBody, jobName) {
   return errors;
 }
 
+/** @param {string} body */
+function jobHasExplicitFalseCondition(body) {
+  const header = body.split(/^\s*steps\s*:/m)[0];
+  return /^\s*if:\s*\$\{\{\s*false\s*\}\}\s*(?:#.*)?$/m.test(header);
+}
+
 /**
  * Pure content validator for desktop-release.yml (Task 8 signed release).
  * @param {string} yml
@@ -1329,6 +1335,12 @@ export function checkDesktopReleaseWorkflowContent(yml) {
     typeof jobs.release !== "string"
   ) {
     return errors;
+  }
+
+  if (!jobHasExplicitFalseCondition(jobs.windows)) {
+    errors.push(
+      "desktop-release.yml job 'windows' must be explicitly disabled with job-level if: ${{ false }}",
+    );
   }
 
   // react-router 8.3 engines: each build job must use setup-node with exact Node pin.
@@ -1665,18 +1677,21 @@ export function checkDesktopReleaseWorkflowContent(yml) {
     }
   } else {
     errors.push(
-      "desktop-release.yml job 'release' must declare needs: [macos, windows, linux]",
+      "desktop-release.yml job 'release' must declare needs exactly [macos, linux] while Windows is disabled",
     );
   }
-  for (const n of ["macos", "windows", "linux"]) {
-    if (!needNames.has(n)) {
-      errors.push(
-        `desktop-release.yml job 'release' needs: must include '${n}'`,
-      );
-    }
+  const expectedNeeds = new Set(["macos", "linux"]);
+  if (
+    needNames.size !== expectedNeeds.size ||
+    [...expectedNeeds].some((name) => !needNames.has(name))
+  ) {
+    errors.push(
+      "desktop-release.yml job 'release' must declare needs exactly [macos, linux] while Windows is disabled",
+    );
   }
 
   const relSteps = extractJobSteps(rel);
+  const activeReleaseArtifacts = [ARTIFACT_MACOS, ARTIFACT_LINUX];
   const downloads = new Set();
   let stageIdx = -1;
   let shaIdx = -1;
@@ -1688,19 +1703,16 @@ export function checkDesktopReleaseWorkflowContent(yml) {
   for (let i = 0; i < relSteps.length; i++) {
     const s = relSteps[i];
     if (/actions\/download-artifact@/.test(s)) {
-      for (const name of [ARTIFACT_MACOS, ARTIFACT_WINDOWS, ARTIFACT_LINUX]) {
+      for (const name of activeReleaseArtifacts) {
         if (s.includes(name)) downloads.add(name);
       }
     }
-    // Recursive flatten staging: find -type f + release-assets + all three roots + collision.
+    // Recursive flatten staging: find -type f + release-assets + both active roots + collision.
     if (
       /\bfind\b/.test(s) &&
       /-type\s+f/.test(s) &&
       /release-assets/.test(s) &&
-      ARTIFACT_MACOS &&
-      s.includes(ARTIFACT_MACOS) &&
-      s.includes(ARTIFACT_WINDOWS) &&
-      s.includes(ARTIFACT_LINUX) &&
+      activeReleaseArtifacts.every((name) => s.includes(name)) &&
       (/collision/i.test(s) ||
         /already staged/i.test(s) ||
         /\[\[\s*-e\s+/.test(s) ||
@@ -1715,12 +1727,17 @@ export function checkDesktopReleaseWorkflowContent(yml) {
     }
     if (/gh\s+release\s+create/i.test(s)) pubIdx = i;
   }
-  for (const name of [ARTIFACT_MACOS, ARTIFACT_WINDOWS, ARTIFACT_LINUX]) {
+  for (const name of activeReleaseArtifacts) {
     if (!downloads.has(name)) {
       errors.push(
         `desktop-release.yml job 'release' must download-artifact ${name} before checksum`,
       );
     }
+  }
+  if (rel.includes(ARTIFACT_WINDOWS)) {
+    errors.push(
+      `desktop-release.yml job 'release' must not download, stage, checksum, or publish disabled Windows artifact ${ARTIFACT_WINDOWS}`,
+    );
   }
   const lastDl = Math.max(
     -1,
@@ -1744,7 +1761,7 @@ export function checkDesktopReleaseWorkflowContent(yml) {
 
   if (stageIdx < 0) {
     errors.push(
-      "desktop-release.yml job 'release' must stage recursive regular files from all three artifact roots into release-assets with collision detection (find -type f)",
+      "desktop-release.yml job 'release' must stage recursive regular files from both active artifact roots into release-assets with collision detection (find -type f)",
     );
   } else if (lastDl >= 0 && stageIdx < lastDl) {
     errors.push(
@@ -1814,6 +1831,11 @@ export function checkDesktopReleaseWorkflowContent(yml) {
     if (oneLevelGlobRe.test(afterCreate)) {
       errors.push(
         "desktop-release.yml gh release create must not use one-level platform artifact globs",
+      );
+    }
+    if (!/Windows is not included/i.test(pub)) {
+      errors.push(
+        "desktop-release.yml gh release create notes must state that Windows is not included",
       );
     }
   }

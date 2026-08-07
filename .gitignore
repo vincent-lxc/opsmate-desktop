@@ -40,6 +40,8 @@ src-tauri/gen/schemas/
 *.exe
 *.msi
 
+developer/
+
 # Agent / local tooling
 .orca/
 .worktrees/
