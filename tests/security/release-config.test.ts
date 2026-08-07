@@ -267,7 +267,7 @@ describe("Task 5 release config", () => {
         /uses:\s*actions\/download-artifact@([^\s#]+)/g,
       ),
     ].map((m) => m[1]);
-    expect(downloadUses.length).toBeGreaterThanOrEqual(3);
+    expect(downloadUses).toHaveLength(2);
     expect(
       downloadUses.every((r) => r === REQUIRED_ACTIONS_DOWNLOAD_ARTIFACT_SHA),
     ).toBe(true);
@@ -1181,6 +1181,7 @@ jobs:
           name: ${ARTIFACT_MACOS}
           path: out.dmg
   windows:
+    if: \${{ false }}
     runs-on: windows-2025
     environment: desktop-release
     steps:
@@ -1237,7 +1238,7 @@ jobs:
           name: ${ARTIFACT_LINUX}
           path: bundle/
   release:
-    needs: [macos, windows, linux]
+    needs: [macos, linux]
     runs-on: ubuntu-24.04
     environment: desktop-release
     permissions:
@@ -1247,10 +1248,6 @@ jobs:
         with:
           name: ${ARTIFACT_MACOS}
           path: ${ARTIFACT_MACOS}
-      - uses: ${download}
-        with:
-          name: ${ARTIFACT_WINDOWS}
-          path: ${ARTIFACT_WINDOWS}
       - uses: ${download}
         with:
           name: ${ARTIFACT_LINUX}
@@ -1280,7 +1277,6 @@ jobs:
             fi
           }
           stage_platform "${ARTIFACT_MACOS}"
-          stage_platform "${ARTIFACT_WINDOWS}"
           stage_platform "${ARTIFACT_LINUX}"
       - run: |
           set -euo pipefail
@@ -1289,7 +1285,9 @@ jobs:
       - run: |
           set -euo pipefail
           mapfile -d '' -t files < <(find release-assets -type f -print0 | sort -z)
-          gh release create "\$GITHUB_REF_NAME" --prerelease -- "\${files[@]}" SHA256SUMS
+          gh release create "\$GITHUB_REF_NAME" \
+            --notes "Signed and notarized macOS DMG; Linux AppImage+deb. Windows is not included." \
+            --prerelease -- "\${files[@]}" SHA256SUMS
 `;
 }
 
@@ -1361,6 +1359,41 @@ describe("Task 8A desktop signed-release controls", () => {
   it("checkDesktopReleaseWorkflowContent accepts structural happy-path skeleton", () => {
     const errs = checkDesktopReleaseWorkflowContent(signedReleaseHappyPathYaml());
     expect(errs, errs.join("\n")).toEqual([]);
+  });
+
+  it("requires Windows disabled and excludes Windows from release lineage and assets", () => {
+    const valid = signedReleaseHappyPathYaml();
+    expect(checkDesktopReleaseWorkflowContent(valid)).toEqual([]);
+
+    const enabledWindows = valid.replace(
+      "  windows:\n    if: ${{ false }}\n",
+      "  windows:\n",
+    );
+    expect(
+      checkDesktopReleaseWorkflowContent(enabledWindows).some((e) =>
+        /windows.*explicitly disabled/i.test(e),
+      ),
+    ).toBe(true);
+
+    const windowsDependency = valid.replace(
+      "needs: [macos, linux]",
+      "needs: [macos, windows, linux]",
+    );
+    expect(
+      checkDesktopReleaseWorkflowContent(windowsDependency).some((e) =>
+        /needs exactly.*macos.*linux/i.test(e),
+      ),
+    ).toBe(true);
+
+    const windowsDownload = valid.replace(
+      `      - uses: ${REQUIRED_ACTIONS_DOWNLOAD_ARTIFACT}\n        with:\n          name: ${ARTIFACT_LINUX}`,
+      `      - uses: ${REQUIRED_ACTIONS_DOWNLOAD_ARTIFACT}\n        with:\n          name: ${ARTIFACT_WINDOWS}\n          path: ${ARTIFACT_WINDOWS}\n      - uses: ${REQUIRED_ACTIONS_DOWNLOAD_ARTIFACT}\n        with:\n          name: ${ARTIFACT_LINUX}`,
+    );
+    expect(
+      checkDesktopReleaseWorkflowContent(windowsDownload).some((e) =>
+        /must not download.*windows/i.test(e),
+      ),
+    ).toBe(true);
   });
 
   it("rejects secrets inside run scripts (env mapping required)", () => {
@@ -1467,7 +1500,7 @@ describe("Task 8A desktop signed-release controls", () => {
     // Old one-level globs (Linux nested appimage/deb dirs break this).
     let yml = signedReleaseHappyPathYaml().replace(
       /sha256sum -- "\$\{files\[@\]\}" > SHA256SUMS/,
-      `sha256sum ${ARTIFACT_MACOS}/* ${ARTIFACT_WINDOWS}/* ${ARTIFACT_LINUX}/* > SHA256SUMS`,
+      `sha256sum ${ARTIFACT_MACOS}/* ${ARTIFACT_LINUX}/* > SHA256SUMS`,
     );
     let errs = checkDesktopReleaseWorkflowContent(yml);
     expect(
@@ -1475,8 +1508,8 @@ describe("Task 8A desktop signed-release controls", () => {
     ).toBe(true);
 
     yml = signedReleaseHappyPathYaml().replace(
-      /gh release create "\$GITHUB_REF_NAME" --prerelease -- "\$\{files\[@\]\}" SHA256SUMS/,
-      `gh release create "$GITHUB_REF_NAME" ${ARTIFACT_MACOS}/* ${ARTIFACT_WINDOWS}/* ${ARTIFACT_LINUX}/* SHA256SUMS`,
+      /gh release create "\$GITHUB_REF_NAME"[\s\S]*?--prerelease -- "\$\{files\[@\]\}" SHA256SUMS/,
+      `gh release create "$GITHUB_REF_NAME" ${ARTIFACT_MACOS}/* ${ARTIFACT_LINUX}/* SHA256SUMS`,
     );
     errs = checkDesktopReleaseWorkflowContent(yml);
     expect(
@@ -1495,7 +1528,7 @@ describe("Task 8A desktop signed-release controls", () => {
     expect(errs.some((e) => /real SHA-256 command/i.test(e))).toBe(true);
 
     yml = signedReleaseHappyPathYaml().replace(
-      /gh release create "\$GITHUB_REF_NAME" --prerelease -- "\$\{files\[@\]\}" SHA256SUMS/,
+      /gh release create "\$GITHUB_REF_NAME"[\s\S]*?--prerelease -- "\$\{files\[@\]\}" SHA256SUMS/,
       'gh release create "$GITHUB_REF_NAME" SHA256SUMS',
     );
     errs = checkDesktopReleaseWorkflowContent(yml);
@@ -1576,11 +1609,11 @@ describe("Task 8A desktop signed-release controls", () => {
     ).toBe(true);
 
     yml = signedReleaseHappyPathYaml().replace(
-      "needs: [macos, windows, linux]",
-      "needs: [macos, windows]",
+      "needs: [macos, linux]",
+      "needs: [macos]",
     );
     errs = checkDesktopReleaseWorkflowContent(yml);
-    expect(errs.some((e) => /needs: must include 'linux'/i.test(e))).toBe(true);
+    expect(errs.some((e) => /needs exactly.*macos.*linux/i.test(e))).toBe(true);
 
     yml = signedReleaseHappyPathYaml().replace(
       "gh release create",
