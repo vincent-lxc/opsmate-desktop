@@ -1990,6 +1990,28 @@ export function checkDesktopSignedReleaseConfig() {
   return { ok: errors.length === 0, errors };
 }
 
+/**
+ * Task 1 — fail-closed canonical product source lock.
+ * Only vincent-lxc/opsmate at a full lowercase 40-hex commit is allowed
+ * (branch/tag/short/uppercase SHAs rejected).
+ * @param {{ repository?: unknown, commit?: unknown } | null | undefined} lock
+ * @returns {string[]}
+ */
+export function validateSourceLock(lock) {
+  const errors = [];
+  if (lock?.repository !== "vincent-lxc/opsmate") {
+    errors.push(
+      "release/source-lock.json repository must be vincent-lxc/opsmate",
+    );
+  }
+  if (!/^[0-9a-f]{40}$/.test(String(lock?.commit ?? ""))) {
+    errors.push(
+      "release/source-lock.json commit must be a 40-character lowercase SHA",
+    );
+  }
+  return errors;
+}
+
 const isMain =
   process.argv[1] &&
   resolve(process.argv[1]) === fileURLToPath(import.meta.url);

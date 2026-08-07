@@ -68,11 +68,119 @@ import {
   lineHasSecretExpression,
   parseSignPathOutputArtifactDirectory,
   runScriptsContainSecrets,
+  validateSourceLock,
 } from "../../scripts/check-release-config.mjs";
+import {
+  parseSourceLockText,
+  SOURCE_LOCK_REL,
+} from "../../scripts/read-source-lock.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const confPath = resolve(root, "src-tauri/tauri.conf.json");
 const iconsDir = resolve(root, "src-tauri/icons");
+const sourceLockPath = resolve(root, SOURCE_LOCK_REL);
+
+// ─── Task 1 — canonical source lock (fail-closed) ──────────────────────────
+
+describe("Task 1 canonical source lock", () => {
+  it("requires an immutable opsmate source commit", () => {
+    expect(
+      validateSourceLock({
+        repository: "vincent-lxc/opsmate",
+        commit: "0123456789abcdef0123456789abcdef01234567",
+      }),
+    ).toEqual([]);
+    expect(
+      validateSourceLock({ repository: "vincent-lxc/opsmate", commit: "main" }),
+    ).toContain(
+      "release/source-lock.json commit must be a 40-character lowercase SHA",
+    );
+    expect(
+      validateSourceLock({
+        repository: "attacker/fork",
+        commit: "0123456789abcdef0123456789abcdef01234567",
+      }),
+    ).toContain(
+      "release/source-lock.json repository must be vincent-lxc/opsmate",
+    );
+  });
+
+  it("rejects branch and tag refs (not immutable SHAs)", () => {
+    const shaMsg =
+      "release/source-lock.json commit must be a 40-character lowercase SHA";
+    for (const commit of [
+      "main",
+      "develop",
+      "v1.0.0",
+      "desktop-v0.1.0",
+      "HEAD",
+      "abc123", // short SHA
+      "0123456789ABCDEF0123456789ABCDEF01234567", // uppercase
+      "0123456789abcdef0123456789abcdef0123456", // 39 chars
+      "0123456789abcdef0123456789abcdef012345678", // 41 chars
+      "g123456789abcdef0123456789abcdef01234567", // non-hex
+    ]) {
+      expect(
+        validateSourceLock({
+          repository: "vincent-lxc/opsmate",
+          commit,
+        }),
+        `commit=${commit}`,
+      ).toContain(shaMsg);
+    }
+  });
+
+  it("rejects malformed JSON and extra top-level keys in source-lock", () => {
+    const badJson = parseSourceLockText("{ not json");
+    expect(badJson.ok).toBe(false);
+    expect(badJson.errors.some((e) => /valid JSON|malformed|JSON/i.test(e))).toBe(
+      true,
+    );
+
+    const extra = parseSourceLockText(
+      JSON.stringify({
+        repository: "vincent-lxc/opsmate",
+        commit: "0123456789abcdef0123456789abcdef01234567",
+        branch: "main",
+      }),
+    );
+    expect(extra.ok).toBe(false);
+    expect(
+      extra.errors.some(
+        (e) =>
+          /top-level key|additional|extra|must not contain/i.test(e) &&
+          /branch/i.test(e),
+      ),
+      extra.errors.join("\n"),
+    ).toBe(true);
+
+    const good = parseSourceLockText(
+      JSON.stringify({
+        repository: "vincent-lxc/opsmate",
+        commit: "0123456789abcdef0123456789abcdef01234567",
+      }),
+    );
+    expect(good.ok, good.errors.join("\n")).toBe(true);
+    expect(good.lock).toEqual({
+      repository: "vincent-lxc/opsmate",
+      commit: "0123456789abcdef0123456789abcdef01234567",
+    });
+  });
+
+  it("checks in release/source-lock.json for vincent-lxc/opsmate at a 40-char lowercase SHA", () => {
+    expect(existsSync(sourceLockPath), "release/source-lock.json must exist").toBe(
+      true,
+    );
+    const raw = readFileSync(sourceLockPath, "utf8");
+    const parsed = parseSourceLockText(raw);
+    expect(parsed.ok, parsed.errors.join("\n")).toBe(true);
+    expect(parsed.lock?.repository).toBe("vincent-lxc/opsmate");
+    expect(parsed.lock?.commit).toMatch(/^[0-9a-f]{40}$/);
+    // Fail closed: no branch/tag/ref fields in the checked-in lock.
+    const obj = JSON.parse(raw) as Record<string, unknown>;
+    expect(Object.keys(obj).sort()).toEqual(["commit", "repository"]);
+  });
+});
 
 /** Minimal solid red 2×2 RGBA PNG (filter 0) — classic placeholder failure mode. */
 function solidRedPng2x2(): Buffer {
