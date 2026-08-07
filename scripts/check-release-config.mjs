@@ -1845,6 +1845,11 @@ export function checkDesktopReleaseWorkflowContent(yml) {
   } else if (pubIdx >= 0) {
     const pub = relSteps[pubIdx];
     const afterCreate = pub.slice(pub.search(/gh\s+release\s+create/i));
+    if (!/--repo\s+["']?\$GITHUB_REPOSITORY\b/.test(afterCreate)) {
+      errors.push(
+        "desktop-release.yml gh release create must set --repo $GITHUB_REPOSITORY because the release job has no checkout",
+      );
+    }
     // Must publish staged files: release-assets path on create cmdline and/or ${files[@]} fed by find release-assets.
     const publishesStaged =
       (/files\[@\]/.test(afterCreate) && /find\s+release-assets/.test(pub)) ||
