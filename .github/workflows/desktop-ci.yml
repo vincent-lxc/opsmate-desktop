@@ -1,12 +1,14 @@
-# Task 6 — three-platform internal CI (unsigned short-retention artifacts only).
-# Does not create public releases, apply code identity, or read private tokens.
+# Task 6 + Task 12 — three-platform internal CI.
+# Builds the canonical product from vincent-lxc/opsmate at the locked commit
+# (release/source-lock.json). Does not create public releases, apply code identity,
+# or read private tokens other than OPSMATE_SOURCE_TOKEN for product checkout.
 name: desktop-ci
 
 on:
   push:
-    branches: [main, feat/secure-desktop-foundation]
+    branches: [main, feat/secure-desktop-foundation, ci/release-explicit-repo]
   pull_request:
-    branches: [main, feat/secure-desktop-foundation]
+    branches: [main, feat/secure-desktop-foundation, ci/release-explicit-repo]
   workflow_dispatch:
 
 permissions:
@@ -36,7 +38,7 @@ jobs:
             platform: linux
 
     steps:
-      - name: Checkout
+      - name: Checkout release orchestrator
         # actions/checkout@v7 (Node 24 runtime; pin full SHA — no floating @v4 Node 20)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
@@ -57,20 +59,6 @@ jobs:
           components: rustfmt, clippy
           targets: ${{ matrix.platform == 'macos' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
 
-      - name: Cache Cargo
-        # actions/cache@v6 (Node 24 action runtime; pin full SHA)
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
-        with:
-          path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            src-tauri/target/
-          key: ${{ runner.os }}-cargo-1.92.0-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-1.92.0-
-
       - name: Install Ubuntu Tauri system packages
         if: matrix.platform == 'linux'
         run: |
@@ -88,30 +76,71 @@ jobs:
             patchelf \
             libssl-dev
 
-      - name: npm ci
+      - name: npm ci (release orchestrator gates)
         run: npm ci
 
-      - name: npm test
+      - name: npm test (release orchestrator gates)
         run: npm test
 
       - name: contracts check
         run: npm run contracts:check
 
-      # Required before cargo fmt/clippy/test: tauri::generate_context! needs ../dist
-      # (live failure: macOS job 92294760960, run 31002584367).
-      - name: npm run build:web
-        run: npm run build:web
+      - name: Read canonical source lock
+        id: source
+        shell: bash
+        run: node scripts/read-source-lock.mjs >> "$GITHUB_OUTPUT"
+
+      - name: Checkout canonical OpsMate source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: vincent-lxc/opsmate
+          ref: ${{ steps.source.outputs.commit }}
+          token: ${{ secrets.OPSMATE_SOURCE_TOKEN }}
+          path: source
+          persist-credentials: false
+
+      - name: Record source commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Canonical product: ${{ steps.source.outputs.repository }}@${{ steps.source.outputs.commit }}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Cache Cargo
+        # actions/cache@v6 (Node 24 action runtime; pin full SHA)
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            source/apps/desktop/src-tauri/target/
+          key: ${{ runner.os }}-cargo-product-1.92.0-${{ hashFiles('source/apps/desktop/src-tauri/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-product-1.92.0-
+
+      - name: Admin npm ci / test / build
+        working-directory: source/apps/admin
+        run: |
+          set -euo pipefail
+          npm ci
+          npm test
+          npm run build
+
+      - name: Desktop npm ci
+        working-directory: source/apps/desktop
+        run: npm ci
 
       - name: cargo fmt
-        run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
+        run: cargo fmt --manifest-path source/apps/desktop/src-tauri/Cargo.toml -- --check
 
       - name: cargo clippy (strict)
         run: >
-          cargo clippy --manifest-path src-tauri/Cargo.toml
+          cargo clippy --manifest-path source/apps/desktop/src-tauri/Cargo.toml
           --all-targets --all-features -- -D warnings
 
       - name: cargo test
-        run: cargo test --manifest-path src-tauri/Cargo.toml --all-targets
+        run: cargo test --manifest-path source/apps/desktop/src-tauri/Cargo.toml --all-targets
 
       - name: Ensure macOS dual Apple targets (universal)
         if: matrix.platform == 'macos'
@@ -122,6 +151,7 @@ jobs:
 
       - name: Tauri build (macOS universal-apple-darwin + dmg only)
         if: matrix.platform == 'macos'
+        working-directory: source/apps/desktop
         run: |
           set -euo pipefail
           rustc --version | grep -F "1.92.0"
@@ -130,6 +160,7 @@ jobs:
 
       - name: Tauri build (Windows NSIS)
         if: matrix.platform == 'windows'
+        working-directory: source/apps/desktop
         shell: bash
         run: |
           set -euo pipefail
@@ -138,6 +169,7 @@ jobs:
 
       - name: Tauri build (Linux AppImage + deb)
         if: matrix.platform == 'linux'
+        working-directory: source/apps/desktop
         run: |
           set -euo pipefail
           rustc --version | grep -F "1.92.0"
@@ -150,7 +182,7 @@ jobs:
         with:
           name: opsmate-macos-internal-unsigned
           path: |
-            src-tauri/target/universal-apple-darwin/release/bundle/dmg/*
+            source/apps/desktop/src-tauri/target/universal-apple-darwin/release/bundle/dmg/*
           if-no-files-found: error
           retention-days: 3
 
@@ -161,7 +193,7 @@ jobs:
         with:
           name: opsmate-windows-internal-unsigned
           path: |
-            src-tauri/target/release/bundle/nsis/*
+            source/apps/desktop/src-tauri/target/release/bundle/nsis/*
           if-no-files-found: error
           retention-days: 3
 
@@ -172,7 +204,7 @@ jobs:
         with:
           name: opsmate-linux-internal-unsigned
           path: |
-            src-tauri/target/release/bundle/appimage/*
-            src-tauri/target/release/bundle/deb/*
+            source/apps/desktop/src-tauri/target/release/bundle/appimage/*
+            source/apps/desktop/src-tauri/target/release/bundle/deb/*
           if-no-files-found: error
           retention-days: 3

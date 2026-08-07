@@ -69,6 +69,11 @@ import {
   parseSignPathOutputArtifactDirectory,
   runScriptsContainSecrets,
   validateSourceLock,
+  checkCanonicalProductLineage,
+  CANONICAL_ADMIN_PATH,
+  CANONICAL_DESKTOP_CARGO,
+  CANONICAL_DESKTOP_PATH,
+  REQUIRED_SOURCE_TOKEN_SECRET,
 } from "../../scripts/check-release-config.mjs";
 import {
   parseSourceLockText,
@@ -179,6 +184,118 @@ describe("Task 1 canonical source lock", () => {
     // Fail closed: no branch/tag/ref fields in the checked-in lock.
     const obj = JSON.parse(raw) as Record<string, unknown>;
     expect(Object.keys(obj).sort()).toEqual(["commit", "repository"]);
+  });
+});
+
+// ─── Task 12 — canonical product build lineage ─────────────────────────────
+
+describe("Task 12 canonical product lineage", () => {
+  it("exports monorepo product paths and source token secret name", () => {
+    expect(CANONICAL_ADMIN_PATH).toBe("source/apps/admin");
+    expect(CANONICAL_DESKTOP_PATH).toBe("source/apps/desktop");
+    expect(CANONICAL_DESKTOP_CARGO).toBe(
+      "source/apps/desktop/src-tauri/Cargo.toml",
+    );
+    expect(REQUIRED_SOURCE_TOKEN_SECRET).toBe("OPSMATE_SOURCE_TOKEN");
+  });
+
+  it("rejects workflows that still build the independent root shell as product", () => {
+    const legacy = `
+jobs:
+  build:
+    steps:
+      - uses: actions/checkout@${REQUIRED_ACTIONS_CHECKOUT_SHA}
+      - run: npm ci
+      - run: npm test
+      - run: npm run build:web
+      - run: cargo test --manifest-path src-tauri/Cargo.toml --all-targets
+      - run: npm run tauri -- build --bundles nsis
+`;
+    const errors = checkCanonicalProductLineage(legacy, "fixture.yml");
+    expect(errors.some((e) => /read-source-lock|source-lock/.test(e))).toBe(
+      true,
+    );
+    expect(errors.some((e) => /vincent-lxc\/opsmate|repository/.test(e))).toBe(
+      true,
+    );
+    expect(errors.some((e) => /OPSMATE_SOURCE_TOKEN/.test(e))).toBe(true);
+    expect(errors.some((e) => /path: source/.test(e))).toBe(true);
+    expect(errors.some((e) => /persist-credentials/.test(e))).toBe(true);
+    expect(errors.some((e) => /build:web/.test(e))).toBe(true);
+    expect(errors.some((e) => /root src-tauri|src-tauri\/Cargo/.test(e))).toBe(
+      true,
+    );
+  });
+
+  it("accepts a minimal source-lock product lineage skeleton", () => {
+    const good = `
+jobs:
+  build:
+    steps:
+      - name: Checkout release orchestrator
+        uses: actions/checkout@${REQUIRED_ACTIONS_CHECKOUT_SHA}
+      - name: Read canonical source lock
+        id: source
+        run: node scripts/read-source-lock.mjs >> "$GITHUB_OUTPUT"
+      - name: Checkout canonical OpsMate source
+        uses: actions/checkout@${REQUIRED_ACTIONS_CHECKOUT_SHA}
+        with:
+          repository: vincent-lxc/opsmate
+          ref: \${{ steps.source.outputs.commit }}
+          token: \${{ secrets.OPSMATE_SOURCE_TOKEN }}
+          path: source
+          persist-credentials: false
+      - name: Admin tests
+        working-directory: source/apps/admin
+        run: |
+          npm ci
+          npm test
+          npm run build
+      - name: cargo test product
+        run: cargo test --manifest-path source/apps/desktop/src-tauri/Cargo.toml --all-targets
+      - name: Tauri build
+        working-directory: source/apps/desktop
+        run: npm run tauri -- build --target universal-apple-darwin --bundles dmg
+      - name: Upload
+        uses: actions/upload-artifact@${REQUIRED_ACTIONS_UPLOAD_ARTIFACT_SHA}
+        with:
+          path: source/apps/desktop/src-tauri/target/universal-apple-darwin/release/bundle/dmg/*
+`;
+    const errors = checkCanonicalProductLineage(good, "fixture.yml");
+    expect(errors, errors.join("\n")).toEqual([]);
+  });
+
+  it("desktop-ci.yml and desktop-release.yml enforce canonical product lineage", () => {
+    const ci = readFileSync(
+      resolve(root, ".github/workflows/desktop-ci.yml"),
+      "utf8",
+    );
+    const release = readFileSync(
+      resolve(root, ".github/workflows/desktop-release.yml"),
+      "utf8",
+    );
+    const ciErrors = checkCanonicalProductLineage(ci, "desktop-ci.yml");
+    const relErrors = checkCanonicalProductLineage(
+      release,
+      "desktop-release.yml",
+    );
+    expect(ciErrors, ciErrors.join("\n")).toEqual([]);
+    expect(relErrors, relErrors.join("\n")).toEqual([]);
+    // Product cargo / artifacts must not use independent-shell root.
+    expect(ci).not.toMatch(
+      /cargo test --manifest-path src-tauri\/Cargo\.toml/,
+    );
+    expect(ci).not.toMatch(/run:\s*npm run build:web\b/);
+    expect(release).toMatch(/source\/apps\/desktop\/src-tauri/);
+    expect(release).toMatch(/needs\.macos\.outputs\.source_commit/);
+    // Publish job stays checkout-free / no product source token.
+    const jobs = extractWorkflowJobs(release);
+    expect(jobs.release ?? "").not.toMatch(/actions\/checkout@/);
+    expect(jobs.release ?? "").not.toMatch(
+      /secrets\.OPSMATE_SOURCE_TOKEN|\$\{\{\s*secrets\.OPSMATE_SOURCE_TOKEN/,
+    );
+    expect(jobs.macos ?? "").toMatch(/source_commit:/);
+    expect(jobs.linux ?? "").toMatch(/source_commit:/);
   });
 });
 

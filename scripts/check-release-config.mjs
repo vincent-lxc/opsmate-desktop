@@ -524,12 +524,11 @@ export function checkDesktopCiWorkflow() {
       "desktop-ci.yml must not use Node 20 (react-router 8.3 requires >=22.22.0)",
     );
   }
-  // Core npm/cargo gates
+  // Core gates: release-repo contracts + product cargo under source/
   for (const needle of [
     "npm ci",
     "npm test",
     "contracts:check",
-    "npm run build:web",
     "cargo fmt",
     "clippy",
     "cargo test",
@@ -538,15 +537,23 @@ export function checkDesktopCiWorkflow() {
       errors.push(`desktop-ci.yml must run ${needle}`);
     }
   }
-  // build:web step must run before cargo fmt step (dist for generate_context).
-  // Match the step run line, not comments that mention "cargo fmt".
-  const buildWebIdx = yml.indexOf("run: npm run build:web");
-  const cargoFmtIdx = yml.indexOf("cargo fmt --manifest-path");
-  if (buildWebIdx < 0 || cargoFmtIdx < 0 || buildWebIdx > cargoFmtIdx) {
+  // Admin SPA must be built before desktop cargo (frontendDist / generate_context).
+  const adminBuildIdx = Math.max(
+    yml.indexOf("source/apps/admin"),
+    yml.indexOf(`${CANONICAL_ADMIN_PATH}`),
+  );
+  const cargoFmtIdx = yml.indexOf(
+    `cargo fmt --manifest-path ${CANONICAL_DESKTOP_CARGO}`,
+  );
+  const cargoFmtIdxAlt = yml.indexOf("cargo fmt --manifest-path");
+  const fmtIdx = cargoFmtIdx >= 0 ? cargoFmtIdx : cargoFmtIdxAlt;
+  if (adminBuildIdx < 0 || fmtIdx < 0 || adminBuildIdx > fmtIdx) {
     errors.push(
-      "desktop-ci.yml must run npm run build:web before cargo fmt/clippy/test",
+      "desktop-ci.yml must prepare Admin under source/apps/admin before cargo fmt/clippy/test",
     );
   }
+  // Task 12: canonical product lineage (source-lock checkout + monorepo paths)
+  errors.push(...checkCanonicalProductLineage(yml, "desktop-ci.yml"));
 
   // Exact platform build commands (prevent global four-target bleed on macOS).
   if (!yml.includes(REQUIRED_MAC_TAURI_CMD)) {
@@ -610,12 +617,22 @@ export function checkDesktopCiWorkflow() {
     /codesign/i,
     /signpath/i,
     /apple-actions\/import-codesign/i,
-    /\$\{\{\s*secrets\./i,
   ];
   for (const re of forbidden) {
     if (re.test(yml)) {
       errors.push(
-        `desktop-ci.yml must not invoke release/signing/secrets (${re})`,
+        `desktop-ci.yml must not invoke release/signing (${re})`,
+      );
+    }
+  }
+  // Only OPSMATE_SOURCE_TOKEN is allowed for product checkout (no Apple/SignPath).
+  const secretNames = [
+    ...yml.matchAll(/\$\{\{\s*secrets\.([A-Z0-9_]+)\s*\}\}/g),
+  ].map((m) => m[1]);
+  for (const sec of secretNames) {
+    if (sec !== REQUIRED_SOURCE_TOKEN_SECRET) {
+      errors.push(
+        `desktop-ci.yml must not use secrets.${sec} (only ${REQUIRED_SOURCE_TOKEN_SECRET} for product source checkout)`,
       );
     }
   }
@@ -1910,9 +1927,58 @@ export function checkDesktopReleaseWorkflow() {
       "missing .github/workflows/desktop-release.yml (Task 8 signed release workflow)",
     ];
   }
-  return checkDesktopReleaseWorkflowContent(
-    readFileSync(DESKTOP_RELEASE_PATH, "utf8"),
-  );
+  const yml = readFileSync(DESKTOP_RELEASE_PATH, "utf8");
+  const errors = [
+    ...checkDesktopReleaseWorkflowContent(yml),
+    // Task 12 lineage is file-backed only (pure fixture skeletons stay Task 8-shaped).
+    ...checkCanonicalProductLineage(yml, "desktop-release.yml"),
+  ];
+  // Security: contents:write publish job must stay checkout-free and must not
+  // hold OPSMATE_SOURCE_TOKEN (source identity via needs.*.outputs only).
+  const jobs = extractWorkflowJobs(yml);
+  const rel = jobs.release ?? "";
+  if (/actions\/checkout@/.test(rel)) {
+    errors.push(
+      "desktop-release.yml job 'release' must remain checkout-free (no actions/checkout)",
+    );
+  }
+  if (
+    new RegExp(
+      `secrets\\.${REQUIRED_SOURCE_TOKEN_SECRET}|\\$\\{\\{\\s*secrets\\.${REQUIRED_SOURCE_TOKEN_SECRET}`,
+    ).test(rel)
+  ) {
+    errors.push(
+      `desktop-release.yml job 'release' must not use secrets.${REQUIRED_SOURCE_TOKEN_SECRET}`,
+    );
+  }
+  if (
+    !/needs\.macos\.outputs\.source_commit|needs\.macos\.outputs\.source_repository/.test(
+      rel,
+    )
+  ) {
+    errors.push(
+      "desktop-release.yml job 'release' must consume needs.macos.outputs source_repository/source_commit",
+    );
+  }
+  if (
+    !/outputs:\s*\n\s*source_repository:|source_repository:\s*\$\{\{\s*steps\.source\.outputs\.repository/.test(
+      jobs.macos ?? "",
+    )
+  ) {
+    errors.push(
+      "desktop-release.yml job 'macos' must export source_repository/source_commit job outputs",
+    );
+  }
+  if (
+    !/outputs:\s*\n\s*source_repository:|source_repository:\s*\$\{\{\s*steps\.source\.outputs\.repository/.test(
+      jobs.linux ?? "",
+    )
+  ) {
+    errors.push(
+      "desktop-release.yml job 'linux' must export source_repository/source_commit job outputs",
+    );
+  }
+  return errors;
 }
 
 /**
@@ -2009,6 +2075,148 @@ export function validateSourceLock(lock) {
       "release/source-lock.json commit must be a 40-character lowercase SHA",
     );
   }
+  return errors;
+}
+
+/** Product monorepo paths used after checkout into `source/`. */
+export const CANONICAL_SOURCE_PATH = "source";
+export const CANONICAL_ADMIN_PATH = "source/apps/admin";
+export const CANONICAL_DESKTOP_PATH = "source/apps/desktop";
+export const CANONICAL_DESKTOP_CARGO =
+  "source/apps/desktop/src-tauri/Cargo.toml";
+export const CANONICAL_SOURCE_REPOSITORY = "vincent-lxc/opsmate";
+export const REQUIRED_SOURCE_TOKEN_SECRET = "OPSMATE_SOURCE_TOKEN";
+
+/**
+ * Task 12 — every product build job must read the source lock, checkout the
+ * locked opsmate commit into `source/` with a non-persistent token, and run
+ * Admin/Desktop gates only under source/apps/{admin,desktop}.
+ *
+ * Rejects root product inputs (`npm run build:web`, bare `src-tauri/`, root
+ * `npm run build` as the product build).
+ *
+ * @param {string} yml
+ * @param {string} label e.g. desktop-ci.yml / desktop-release.yml
+ * @returns {string[]}
+ */
+export function checkCanonicalProductLineage(yml, label) {
+  const errors = [];
+  const text = yml.replace(/\r\n/g, "\n");
+
+  // 1) Read lock into GitHub Actions outputs
+  if (
+    !/node\s+scripts\/read-source-lock\.mjs/.test(text) &&
+    !/read-source-lock\.mjs/.test(text)
+  ) {
+    errors.push(
+      `${label} must run node scripts/read-source-lock.mjs (read release/source-lock.json)`,
+    );
+  }
+  if (!/>>\s*"?\$GITHUB_OUTPUT"?/.test(text) && !/GITHUB_OUTPUT/.test(text)) {
+    errors.push(
+      `${label} must write source-lock fields to GITHUB_OUTPUT for checkout ref`,
+    );
+  }
+
+  // 2) Product checkout: repository, ref, token, path, persist-credentials
+  if (!/repository:\s*vincent-lxc\/opsmate/.test(text)) {
+    errors.push(
+      `${label} must checkout repository: ${CANONICAL_SOURCE_REPOSITORY}`,
+    );
+  }
+  if (
+    !/ref:\s*\$\{\{\s*steps\.[a-zA-Z0-9_-]+\.outputs\.commit\s*\}\}/.test(text)
+  ) {
+    errors.push(
+      `${label} must checkout ref: \${{ steps.<id>.outputs.commit }} from source lock`,
+    );
+  }
+  if (
+    !new RegExp(
+      `token:\\s*\\$\\{\\{\\s*secrets\\.${REQUIRED_SOURCE_TOKEN_SECRET}\\s*\\}\\}`,
+    ).test(text)
+  ) {
+    errors.push(
+      `${label} must use secrets.${REQUIRED_SOURCE_TOKEN_SECRET} for product checkout`,
+    );
+  }
+  if (!/path:\s*source\b/.test(text)) {
+    errors.push(`${label} must checkout product source into path: source`);
+  }
+  if (!/persist-credentials:\s*false/.test(text)) {
+    errors.push(
+      `${label} product checkout must set persist-credentials: false`,
+    );
+  }
+
+  // 3) Product work must use monorepo paths
+  if (!text.includes(CANONICAL_ADMIN_PATH)) {
+    errors.push(
+      `${label} must run Admin gates under ${CANONICAL_ADMIN_PATH}`,
+    );
+  }
+  if (!text.includes(CANONICAL_DESKTOP_PATH)) {
+    errors.push(
+      `${label} must run Desktop gates under ${CANONICAL_DESKTOP_PATH}`,
+    );
+  }
+  if (!text.includes(CANONICAL_DESKTOP_CARGO)) {
+    errors.push(
+      `${label} cargo fmt/clippy/test must use --manifest-path ${CANONICAL_DESKTOP_CARGO}`,
+    );
+  }
+
+  // Admin test + build (not release-repo vite shell)
+  if (
+    !/source\/apps\/admin[\s\S]{0,400}npm test/.test(text) &&
+    !/working-directory:\s*source\/apps\/admin[\s\S]{0,200}npm test/.test(text)
+  ) {
+    // Allow sequential steps that mention the path nearby
+    if (
+      !(
+        text.includes("source/apps/admin") &&
+        /npm test/.test(text)
+      )
+    ) {
+      errors.push(
+        `${label} must run npm test for Admin under ${CANONICAL_ADMIN_PATH}`,
+      );
+    }
+  }
+
+  // 4) Reject root independent-shell product inputs
+  if (/run:\s*npm run build:web\b/.test(text)) {
+    errors.push(
+      `${label} must not run root npm run build:web (product UI is ${CANONICAL_ADMIN_PATH})`,
+    );
+  }
+  if (
+    /cargo (fmt|clippy|test)[^\n]*--manifest-path\s+src-tauri\/Cargo\.toml/.test(
+      text,
+    )
+  ) {
+    errors.push(
+      `${label} must not cargo against root src-tauri/Cargo.toml (use ${CANONICAL_DESKTOP_CARGO})`,
+    );
+  }
+  // Artifact / bundle paths must not use bare root src-tauri/target for product
+  if (
+    /path:\s*\|\s*\n\s*src-tauri\/target\//.test(text) ||
+    /path:\s*src-tauri\/target\//.test(text)
+  ) {
+    errors.push(
+      `${label} product artifact paths must be under ${CANONICAL_DESKTOP_PATH}/src-tauri/target`,
+    );
+  }
+  if (
+    /find\s+src-tauri\/target\//.test(text) &&
+    !/find\s+source\/apps\/desktop\/src-tauri\/target\//.test(text)
+  ) {
+    errors.push(
+      `${label} notary/find paths must use ${CANONICAL_DESKTOP_PATH}/src-tauri/target`,
+    );
+  }
+
   return errors;
 }
 
