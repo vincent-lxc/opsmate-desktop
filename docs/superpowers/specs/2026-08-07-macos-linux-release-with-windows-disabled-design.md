@@ -2,7 +2,7 @@
 title: "macOS and Linux release with Windows temporarily disabled"
 type: "release-design"
 date: "2026-08-07"
-status: "review-required"
+status: "design-approved"
 ---
 
 # macOS and Linux release with Windows temporarily disabled
