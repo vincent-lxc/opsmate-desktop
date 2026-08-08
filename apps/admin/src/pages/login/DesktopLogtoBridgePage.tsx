@@ -75,26 +75,47 @@ export function buildDesktopAuthDeepLink(search: string): string {
 
 export function DesktopLogtoBridgePage() {
   const ran = useRef(false);
+  const target = buildDesktopAuthDeepLink(window.location.search);
 
   useEffect(() => {
     if (ran.current) return;
     ran.current = true;
-    const target = buildDesktopAuthDeepLink(window.location.search);
     window.location.replace(target);
-  }, []);
+  }, [target]);
 
   return (
     <div
       style={{
         minHeight: "100vh",
         display: "flex",
+        flexDirection: "column",
         alignItems: "center",
         justifyContent: "center",
+        gap: 16,
         fontFamily: "system-ui, sans-serif",
         color: "#666",
       }}
     >
-      Redirecting to OpsMate Desktop…
+      <span>Redirecting to OpsMate Desktop...</span>
+      <a
+        href={target}
+        style={{
+          display: "inline-flex",
+          alignItems: "center",
+          justifyContent: "center",
+          minWidth: 220,
+          minHeight: 44,
+          padding: "0 20px",
+          borderRadius: 8,
+          background: "#1677ff",
+          color: "#fff",
+          fontWeight: 600,
+          textDecoration: "none",
+        }}
+      >
+        Open OpsMate Desktop
+      </a>
+      <small>If the app does not open automatically, click the button.</small>
     </div>
   );
 }

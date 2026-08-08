@@ -1,4 +1,4 @@
-import { render } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   buildDesktopAuthDeepLink,
@@ -143,6 +143,14 @@ describe("DesktopLogtoBridgePage", () => {
     expect(target).toContain("opsmate://auth/callback?");
     expect(target).toContain("code=a");
     expect(target).toContain("state=b");
+  });
+
+  it("renders a user-gesture fallback link for browsers that block automatic deep links", () => {
+    render(<DesktopLogtoBridgePage />);
+    const link = screen.getByRole("link", { name: "Open OpsMate Desktop" });
+    expect(link.getAttribute("href")).toContain("opsmate://auth/callback?");
+    expect(link.getAttribute("href")).toContain("code=a");
+    expect(link.getAttribute("href")).toContain("state=b");
   });
 
   it("forwards error query to deep link", () => {
