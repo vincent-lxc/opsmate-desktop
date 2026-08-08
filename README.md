@@ -1,42 +1,34 @@
-# OpsMate Desktop (release orchestrator)
+# OpsMate Desktop
 
-Public **release repository** for the OpsMate desktop client. This tree owns
-CI/release workflows, signing policy, contracts gates, and the immutable
-product **source lock** — not the live product Web UI or Tauri application
-sources that ship in installers.
+Independent **pre-release** desktop client for OpsMate (运维助手).
 
-**Product code** lives in [`vincent-lxc/opsmate`](https://github.com/vincent-lxc/opsmate)
-and is pinned by [`release/source-lock.json`](./release/source-lock.json)
-(`repository` + full 40-hex `commit` only).
+React 19 UI + Tauri 2 / Rust 1.92. This repository is the **desktop client only**:
+sessions (Logto PKCE), cloud transport, local Stronghold vault, and local SSH are
+owned by Rust. The WebView never holds JWTs or private keys.
 
 **License:** [Mozilla Public License 2.0](./LICENSE) (SPDX `MPL-2.0`).
 
-## Canonical product build (Task 12)
+## Product scope
 
-Branch CI (`.github/workflows/desktop-ci.yml`) and signed release
-(`.github/workflows/desktop-release.yml`) both:
+**Top-level navigation (exactly four)**
 
-1. Checkout **this** orchestrator repository.
-2. Run orchestrator gates (`npm ci`, `npm test`, `contracts:check`).
-3. Read `release/source-lock.json` via `node scripts/read-source-lock.mjs`.
-4. Checkout `vincent-lxc/opsmate` at the locked commit into `source/` using
-   `secrets.OPSMATE_SOURCE_TOKEN` with `persist-credentials: false` (**build jobs only**).
-5. Build and test **only** under:
-   - `source/apps/admin` — Admin Web UI (`npm test`, `npm run build`)
-   - `source/apps/desktop` — Tauri/Rust desktop (`cargo` + `npm run tauri -- build …`)
+- Monitoring Center (监控中心) — `/monitoring`
+- My Servers (我的服务器) — `/servers`
+- Credentials (凭证) — `/credentials`
+- My Account (我的账户) — `/account`
 
-Root `src/`, root `src-tauri/`, and root `npm run build:web` are **not** product
-inputs. The independent shell that remains in this repo supports historical
-contracts/icons/config gates only; installers published by CI/release come from
-the locked monorepo paths above.
+**Contextual (not top-level)**
 
-macOS release keeps Developer ID import (via env), explicit `notarytool`
-submit/wait, staple, codesign, Gatekeeper (`spctl --type install`), and
-`stapler validate`. Windows remains **job-level** `if: ${{ false }}` and is
-excluded from release `needs` and assets. Build jobs export locked source
-`repository`/`commit` as job outputs; the **checkout-free** `release` publish
-job (`contents: write`) never holds product source tokens and only consumes
-`needs.macos` / `needs.linux` outputs for summary and release notes.
+- Terminal / SSH and AI workspace — entered from server detail `/servers/:serverId`
+
+**Excluded from this shell**
+
+- Standalone top-level Terminal/AI menu
+- Roles / menu administration
+- Tenant user administration
+- System management
+- Super-admin AI Provider configuration
+- Official Telegram Bot configuration
 
 ## Credentials and trust boundaries
 
@@ -52,29 +44,24 @@ job (`contents: write`) never holds product source tokens and only consumes
   `wss://app.itops.sh`. **Publishing this desktop repository does not open-source
   the SaaS backend.**
 
-## Source lock
+## Independence
 
-```json
-{
-  "repository": "vincent-lxc/opsmate",
-  "commit": "<40-char lowercase SHA>"
-}
-```
+This repository is **not** a monorepo folder and **does not** embed
+`ops-ai/apps/admin` or `../../admin/dist`. The Vite build emits to `dist/`, and
+Tauri loads `frontendDist: ../dist`.
 
-Validate / emit Actions outputs:
+## Development
 
 ```bash
-node scripts/read-source-lock.mjs
-node scripts/check-release-config.mjs
-```
-
-## Orchestrator development
-
-```bash
-# JS toolchain (release-config / contracts gates)
+# JS toolchain
 npm ci
 npm test
-npm run contracts:check
+npm run build:web
+
+# Rust / Tauri (use Rust 1.92+)
+rustup run 1.92.0 cargo test --manifest-path src-tauri/Cargo.toml
+npm run dev:tauri
+rustup run 1.92.0 npm run build
 ```
 
 ## Security docs
@@ -86,6 +73,7 @@ npm run contracts:check
 
 ## Status
 
-Release orchestration under active development. Branch CI may produce
-**internal-unsigned** installers built from the locked product commit. Public
-`desktop-v*` tags run the protected signed/notarized macOS path (Windows off).
+Pre-release desktop client under active development. Branch CI may produce
+**internal-unsigned** installers for engineering use. This repository does **not**
+claim production readiness, code signing, notarization, or a public Release
+channel for signed binaries.

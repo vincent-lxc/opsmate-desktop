@@ -1,5 +1,4 @@
-# Task 8 + Task 12 — protected signed desktop release (tag desktop-v* only).
-# Builds the canonical product from vincent-lxc/opsmate at release/source-lock.json.
+# Task 8 — protected signed desktop release (tag desktop-v* only).
 # Reads signing secrets only from GitHub Environment desktop-release.
 # Does not use continue-on-error; no secrets expressions inside run: scripts.
 name: desktop-release
@@ -25,10 +24,6 @@ jobs:
   macos:
     runs-on: macos-14
     environment: desktop-release
-    # Propagate locked product source identity to the checkout-free release job.
-    outputs:
-      source_repository: ${{ steps.source.outputs.repository }}
-      source_commit: ${{ steps.source.outputs.commit }}
     env:
       # Apple signing — mapped via env only (never in run: scripts).
       # Notarization credentials are scoped to the explicit notarytool steps below
@@ -37,7 +32,7 @@ jobs:
       APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
       APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
     steps:
-      - name: Checkout release orchestrator
+      - name: Checkout
         # actions/checkout@v7
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
@@ -55,35 +50,6 @@ jobs:
           components: rustfmt, clippy
           targets: aarch64-apple-darwin,x86_64-apple-darwin
 
-      - name: npm ci (release orchestrator gates)
-        run: npm ci
-
-      - name: npm test (release orchestrator gates)
-        run: npm test
-
-      - name: contracts check
-        run: npm run contracts:check
-
-      - name: Read canonical source lock
-        id: source
-        shell: bash
-        run: node scripts/read-source-lock.mjs >> "$GITHUB_OUTPUT"
-
-      - name: Checkout canonical OpsMate source
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          repository: vincent-lxc/opsmate
-          ref: ${{ steps.source.outputs.commit }}
-          token: ${{ secrets.OPSMATE_SOURCE_TOKEN }}
-          path: source
-          persist-credentials: false
-
-      - name: Record source commit
-        shell: bash
-        run: |
-          set -euo pipefail
-          echo "Canonical product: ${{ steps.source.outputs.repository }}@${{ steps.source.outputs.commit }}" >> "$GITHUB_STEP_SUMMARY"
-
       - name: Cache Cargo
         # actions/cache@v6
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
@@ -93,33 +59,33 @@ jobs:
             ~/.cargo/registry/index/
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
-            source/apps/desktop/src-tauri/target/
-          key: ${{ runner.os }}-cargo-release-product-1.92.0-${{ hashFiles('source/apps/desktop/src-tauri/Cargo.lock') }}
+            src-tauri/target/
+          key: ${{ runner.os }}-cargo-release-1.92.0-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-release-product-1.92.0-
+            ${{ runner.os }}-cargo-release-1.92.0-
 
-      - name: Admin npm ci / test / build
-        working-directory: source/apps/admin
-        run: |
-          set -euo pipefail
-          npm ci
-          npm test
-          npm run build
-
-      - name: Desktop npm ci
-        working-directory: source/apps/desktop
+      - name: npm ci
         run: npm ci
 
+      - name: npm test
+        run: npm test
+
+      - name: contracts check
+        run: npm run contracts:check
+
+      - name: npm run build:web
+        run: npm run build:web
+
       - name: cargo fmt
-        run: cargo fmt --manifest-path source/apps/desktop/src-tauri/Cargo.toml -- --check
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
 
       - name: cargo clippy (strict)
         run: >
-          cargo clippy --manifest-path source/apps/desktop/src-tauri/Cargo.toml
+          cargo clippy --manifest-path src-tauri/Cargo.toml
           --all-targets --all-features -- -D warnings
 
       - name: cargo test
-        run: cargo test --manifest-path source/apps/desktop/src-tauri/Cargo.toml --all-targets
+        run: cargo test --manifest-path src-tauri/Cargo.toml --all-targets
 
       - name: Ensure macOS dual Apple targets
         run: |
@@ -129,7 +95,6 @@ jobs:
 
       - name: Tauri build signed universal DMG (no automatic notarization)
         timeout-minutes: 45
-        working-directory: source/apps/desktop
         # Certificate env vars drive Tauri codesigning. Notarization credentials
         # are deliberately absent so this step cannot wait on Apple's service.
         run: |
@@ -146,7 +111,7 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           set -euo pipefail
-          DMG="$(find source/apps/desktop/src-tauri/target/universal-apple-darwin/release/bundle/dmg -name '*.dmg' -type f | head -1)"
+          DMG="$(find src-tauri/target/universal-apple-darwin/release/bundle/dmg -name '*.dmg' -type f | head -1)"
           test -n "$DMG"
           SUBMIT_JSON="$RUNNER_TEMP/notary-submit.json"
           xcrun notarytool submit "$DMG" \
@@ -189,14 +154,14 @@ jobs:
       - name: Staple notarization ticket to DMG
         run: |
           set -euo pipefail
-          DMG="$(find source/apps/desktop/src-tauri/target/universal-apple-darwin/release/bundle/dmg -name '*.dmg' -type f | head -1)"
+          DMG="$(find src-tauri/target/universal-apple-darwin/release/bundle/dmg -name '*.dmg' -type f | head -1)"
           test -n "$DMG"
           xcrun stapler staple "$DMG"
 
       - name: codesign verify
         run: |
           set -euo pipefail
-          DMG="$(find source/apps/desktop/src-tauri/target/universal-apple-darwin/release/bundle/dmg -name '*.dmg' -type f | head -1)"
+          DMG="$(find src-tauri/target/universal-apple-darwin/release/bundle/dmg -name '*.dmg' -type f | head -1)"
           test -n "$DMG"
           MOUNT_DIR="$(mktemp -d "$RUNNER_TEMP/opsmate-dmg.XXXXXX")"
           cleanup_mount() {
@@ -212,14 +177,14 @@ jobs:
       - name: spctl Gatekeeper assess
         run: |
           set -euo pipefail
-          DMG="$(find source/apps/desktop/src-tauri/target/universal-apple-darwin/release/bundle/dmg -name '*.dmg' -type f | head -1)"
+          DMG="$(find src-tauri/target/universal-apple-darwin/release/bundle/dmg -name '*.dmg' -type f | head -1)"
           test -n "$DMG"
           spctl --assess --type install --verbose=4 "$DMG"
 
       - name: stapler validate DMG
         run: |
           set -euo pipefail
-          DMG="$(find source/apps/desktop/src-tauri/target/universal-apple-darwin/release/bundle/dmg -name '*.dmg' -type f | head -1)"
+          DMG="$(find src-tauri/target/universal-apple-darwin/release/bundle/dmg -name '*.dmg' -type f | head -1)"
           test -n "$DMG"
           xcrun stapler validate "$DMG"
 
@@ -228,7 +193,7 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: opsmate-macos-signed-notarized
-          path: source/apps/desktop/src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+          path: src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
           if-no-files-found: error
           retention-days: 14
 
@@ -238,7 +203,7 @@ jobs:
     runs-on: windows-2025
     environment: desktop-release
     steps:
-      - name: Checkout release orchestrator
+      - name: Checkout
         # actions/checkout@v7
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
@@ -255,32 +220,6 @@ jobs:
         with:
           components: rustfmt, clippy
 
-      - name: npm ci (release orchestrator gates)
-        shell: bash
-        run: npm ci
-
-      - name: npm test (release orchestrator gates)
-        shell: bash
-        run: npm test
-
-      - name: contracts check
-        shell: bash
-        run: npm run contracts:check
-
-      - name: Read canonical source lock
-        id: source
-        shell: bash
-        run: node scripts/read-source-lock.mjs >> "$GITHUB_OUTPUT"
-
-      - name: Checkout canonical OpsMate source
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          repository: vincent-lxc/opsmate
-          ref: ${{ steps.source.outputs.commit }}
-          token: ${{ secrets.OPSMATE_SOURCE_TOKEN }}
-          path: source
-          persist-credentials: false
-
       - name: Cache Cargo
         # actions/cache@v6
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
@@ -290,41 +229,42 @@ jobs:
             ~/.cargo/registry/index/
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
-            source/apps/desktop/src-tauri/target/
-          key: ${{ runner.os }}-cargo-release-product-1.92.0-${{ hashFiles('source/apps/desktop/src-tauri/Cargo.lock') }}
+            src-tauri/target/
+          key: ${{ runner.os }}-cargo-release-1.92.0-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-release-product-1.92.0-
+            ${{ runner.os }}-cargo-release-1.92.0-
 
-      - name: Admin npm ci / test / build
-        working-directory: source/apps/admin
-        shell: bash
-        run: |
-          set -euo pipefail
-          npm ci
-          npm test
-          npm run build
-
-      - name: Desktop npm ci
-        working-directory: source/apps/desktop
+      - name: npm ci
         shell: bash
         run: npm ci
 
+      - name: npm test
+        shell: bash
+        run: npm test
+
+      - name: contracts check
+        shell: bash
+        run: npm run contracts:check
+
+      - name: npm run build:web
+        shell: bash
+        run: npm run build:web
+
       - name: cargo fmt
         shell: bash
-        run: cargo fmt --manifest-path source/apps/desktop/src-tauri/Cargo.toml -- --check
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
 
       - name: cargo clippy (strict)
         shell: bash
         run: >
-          cargo clippy --manifest-path source/apps/desktop/src-tauri/Cargo.toml
+          cargo clippy --manifest-path src-tauri/Cargo.toml
           --all-targets --all-features -- -D warnings
 
       - name: cargo test
         shell: bash
-        run: cargo test --manifest-path source/apps/desktop/src-tauri/Cargo.toml --all-targets
+        run: cargo test --manifest-path src-tauri/Cargo.toml --all-targets
 
       - name: Tauri build unsigned NSIS
-        working-directory: source/apps/desktop
         shell: bash
         run: |
           set -euo pipefail
@@ -337,7 +277,7 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: windows-unsigned-nsis
-          path: source/apps/desktop/src-tauri/target/release/bundle/nsis/*
+          path: src-tauri/target/release/bundle/nsis/*
           if-no-files-found: error
           retention-days: 3
 
@@ -380,12 +320,8 @@ jobs:
 
   linux:
     runs-on: ubuntu-24.04
-    # Propagate locked product source identity to the checkout-free release job.
-    outputs:
-      source_repository: ${{ steps.source.outputs.repository }}
-      source_commit: ${{ steps.source.outputs.commit }}
     steps:
-      - name: Checkout release orchestrator
+      - name: Checkout
         # actions/checkout@v7
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
@@ -401,6 +337,20 @@ jobs:
         uses: dtolnay/rust-toolchain@87eb139fed4b08a67bd1fa429a21d1f5d523e03e
         with:
           components: rustfmt, clippy
+
+      - name: Cache Cargo
+        # actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            src-tauri/target/
+          key: ${{ runner.os }}-cargo-release-1.92.0-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-release-1.92.0-
 
       - name: Install Ubuntu Tauri system packages
         run: |
@@ -418,74 +368,30 @@ jobs:
             patchelf \
             libssl-dev
 
-      - name: npm ci (release orchestrator gates)
+      - name: npm ci
         run: npm ci
 
-      - name: npm test (release orchestrator gates)
+      - name: npm test
         run: npm test
 
       - name: contracts check
         run: npm run contracts:check
 
-      - name: Read canonical source lock
-        id: source
-        shell: bash
-        run: node scripts/read-source-lock.mjs >> "$GITHUB_OUTPUT"
-
-      - name: Checkout canonical OpsMate source
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          repository: vincent-lxc/opsmate
-          ref: ${{ steps.source.outputs.commit }}
-          token: ${{ secrets.OPSMATE_SOURCE_TOKEN }}
-          path: source
-          persist-credentials: false
-
-      - name: Record source commit
-        shell: bash
-        run: |
-          set -euo pipefail
-          echo "Canonical product: ${{ steps.source.outputs.repository }}@${{ steps.source.outputs.commit }}" >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Cache Cargo
-        # actions/cache@v6
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
-        with:
-          path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            source/apps/desktop/src-tauri/target/
-          key: ${{ runner.os }}-cargo-release-product-1.92.0-${{ hashFiles('source/apps/desktop/src-tauri/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-release-product-1.92.0-
-
-      - name: Admin npm ci / test / build
-        working-directory: source/apps/admin
-        run: |
-          set -euo pipefail
-          npm ci
-          npm test
-          npm run build
-
-      - name: Desktop npm ci
-        working-directory: source/apps/desktop
-        run: npm ci
+      - name: npm run build:web
+        run: npm run build:web
 
       - name: cargo fmt
-        run: cargo fmt --manifest-path source/apps/desktop/src-tauri/Cargo.toml -- --check
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
 
       - name: cargo clippy (strict)
         run: >
-          cargo clippy --manifest-path source/apps/desktop/src-tauri/Cargo.toml
+          cargo clippy --manifest-path src-tauri/Cargo.toml
           --all-targets --all-features -- -D warnings
 
       - name: cargo test
-        run: cargo test --manifest-path source/apps/desktop/src-tauri/Cargo.toml --all-targets
+        run: cargo test --manifest-path src-tauri/Cargo.toml --all-targets
 
       - name: Tauri build AppImage and deb
-        working-directory: source/apps/desktop
         run: |
           set -euo pipefail
           rustc --version | grep -F "1.92.0"
@@ -497,14 +403,12 @@ jobs:
         with:
           name: opsmate-linux-release
           path: |
-            source/apps/desktop/src-tauri/target/release/bundle/appimage/*.AppImage
-            source/apps/desktop/src-tauri/target/release/bundle/deb/*.deb
+            src-tauri/target/release/bundle/appimage/*.AppImage
+            src-tauri/target/release/bundle/deb/*.deb
           if-no-files-found: error
           retention-days: 14
 
   release:
-    # Checkout-free publish job (contents: write). Source identity comes from
-    # build-job outputs — never OPSMATE_SOURCE_TOKEN or product checkout here.
     needs: [macos, linux]
     runs-on: ubuntu-24.04
     environment: desktop-release
@@ -583,12 +487,6 @@ jobs:
           test -s SHA256SUMS
 
       - name: Create GitHub pre-release
-        env:
-          # Propagated from build jobs (same lock); never read OPSMATE_SOURCE_TOKEN here.
-          SOURCE_REPOSITORY: ${{ needs.macos.outputs.source_repository }}
-          SOURCE_COMMIT: ${{ needs.macos.outputs.source_commit }}
-          SOURCE_REPOSITORY_LINUX: ${{ needs.linux.outputs.source_repository }}
-          SOURCE_COMMIT_LINUX: ${{ needs.linux.outputs.source_commit }}
         run: |
           set -euo pipefail
           mapfile -d '' -t files < <(find release-assets -type f -print0 | sort -z)
@@ -596,26 +494,10 @@ jobs:
             echo "release-assets empty" >&2
             exit 1
           fi
-          # Fail closed if macos/linux disagree on the locked product commit.
-          if [[ -z "${SOURCE_REPOSITORY}" || -z "${SOURCE_COMMIT}" ]]; then
-            echo "missing macos source outputs" >&2
-            exit 1
-          fi
-          if [[ "${SOURCE_REPOSITORY}" != "${SOURCE_REPOSITORY_LINUX}" || "${SOURCE_COMMIT}" != "${SOURCE_COMMIT_LINUX}" ]]; then
-            echo "macos/linux source lock outputs disagree" >&2
-            exit 1
-          fi
-          NOTES="$(printf '%s\n' \
-            "OpsMate Desktop pre-release $GITHUB_REF_NAME (signed and notarized macOS DMG; Linux AppImage+deb; Windows is not included)." \
-            "" \
-            "Canonical product source: \`${SOURCE_REPOSITORY}@${SOURCE_COMMIT}\` (from \`release/source-lock.json\` on build jobs)." \
-            "Product build paths: \`source/apps/admin\` + \`source/apps/desktop\` only." \
-          )"
-          echo "$NOTES" >> "$GITHUB_STEP_SUMMARY"
           gh release create "$GITHUB_REF_NAME" \
             --repo "$GITHUB_REPOSITORY" \
             --title "$GITHUB_REF_NAME" \
-            --notes "$NOTES" \
+            --notes "OpsMate Desktop pre-release $GITHUB_REF_NAME (signed and notarized macOS DMG; Linux AppImage+deb; Windows is not included)." \
             --prerelease \
             -- \
             "${files[@]}" \
