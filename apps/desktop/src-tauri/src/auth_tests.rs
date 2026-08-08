@@ -779,6 +779,21 @@ fn auth_source_forbids_token_bearing_production_events() {
 }
 
 #[test]
+fn auth_deep_link_source_handles_startup_urls_and_recovers_ui_on_error() {
+    let lib = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/lib.rs");
+    let raw = std::fs::read_to_string(lib).unwrap();
+    assert!(
+        raw.contains("deep_link().get_current()"),
+        "desktop auth must consume the callback URL that launched the app"
+    );
+    assert!(
+        raw.contains("fn handle_auth_deep_link")
+            && raw.contains("emit_auth_session_status(app, store)"),
+        "deep-link success and failure must notify the WebView session state"
+    );
+}
+
+#[test]
 fn auth_session_status_wire_is_secret_free_camel_case() {
     let st = AuthSessionStatus {
         authenticated: true,

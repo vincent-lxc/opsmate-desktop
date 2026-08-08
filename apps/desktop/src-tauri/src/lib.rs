@@ -90,6 +90,22 @@ fn emit_auth_session_status(app: &AppHandle, store: &AuthStore) {
     }
 }
 
+fn handle_auth_deep_link(app: &AppHandle, store: &AuthStore, url: &str) {
+    let http = TokioAuthHttp::new();
+    match perform_handle_deep_link(store, &http, url) {
+        Ok(()) => emit_auth_session_status(app, store),
+        Err(e) => {
+            // Secret-free log only - never Display of free-form bodies/tokens.
+            eprintln!(
+                "[auth] deep link handling failed: {}",
+                map_auth_public(e)
+            );
+            // The WebView must leave its loading state even when native auth fails.
+            emit_auth_session_status(app, store);
+        }
+    }
+}
+
 fn map_vault(e: VaultError) -> String {
     // Sanitize — never include secret material
     e.to_string()
@@ -603,20 +619,21 @@ pub fn run() {
 
                 let handle = app.handle().clone();
                 let store = auth_store.clone();
+                // macOS can launch the app with the callback URL before the
+                // runtime listener is registered. Consume that initial URL on
+                // startup; the WebView polls native session state on load.
+                if let Some(urls) = app.deep_link().get_current().map_err(|e| {
+                    Box::<dyn std::error::Error>::from(format!(
+                        "deep link startup URL unavailable: {e}"
+                    ))
+                })? {
+                    for url in urls {
+                        handle_auth_deep_link(&handle, store.as_ref(), url.as_str());
+                    }
+                }
                 app.deep_link().on_open_url(move |event| {
                     for u in event.urls() {
-                        let s = u.to_string();
-                        let http = TokioAuthHttp::new();
-                        match perform_handle_deep_link(store.as_ref(), &http, &s) {
-                            Ok(()) => emit_auth_session_status(&handle, store.as_ref()),
-                            Err(e) => {
-                                // Secret-free log only — never Display of free-form bodies/tokens.
-                                eprintln!(
-                                    "[auth] deep link handling failed: {}",
-                                    map_auth_public(e)
-                                );
-                            }
-                        }
+                        handle_auth_deep_link(&handle, store.as_ref(), u.as_str());
                     }
                 });
 

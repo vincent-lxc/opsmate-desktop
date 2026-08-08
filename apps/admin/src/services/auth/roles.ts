@@ -25,7 +25,7 @@ const DESKTOP_AUTH_FLAG_KEY = "opsmate_desktop_authenticated";
  * 这样登录/邀请兑换/退出在 SPA 导航（无整页刷新）下也能立刻拿到真实权限，
  * 不再停留在挂载时的 fail-open FULL_ENTITLEMENTS（企业版）。
  */
-const AUTH_SESSION_EVENT = "opsmate:auth-session";
+export const AUTH_SESSION_EVENT = "opsmate:auth-session";
 
 export function setAuthSession(
   token: string,

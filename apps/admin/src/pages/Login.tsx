@@ -16,6 +16,7 @@ import { api } from "../api/client";
 import { OpsMateLogo } from "../components/OpsMateLogo";
 import { HeaderActions } from "../components/HeaderActions";
 import {
+  AUTH_SESSION_EVENT,
   hasActiveSession,
   isLocalDevHost,
   mustChangePassword,
@@ -125,6 +126,14 @@ export function LoginPage() {
     if (!isDesktopRuntime()) return;
     let cancelled = false;
     let unlisten: (() => void) | undefined;
+    const handleSessionChange = () => {
+      if (hasActiveSession()) {
+        postLoginRedirect();
+      } else {
+        setLogtoLoading(false);
+      }
+    };
+    window.addEventListener(AUTH_SESSION_EVENT, handleSessionChange);
     (async () => {
       try {
         unlisten = await initNativeAuth();
@@ -138,6 +147,7 @@ export function LoginPage() {
     })();
     return () => {
       cancelled = true;
+      window.removeEventListener(AUTH_SESSION_EVENT, handleSessionChange);
       unlisten?.();
     };
   }, []);
