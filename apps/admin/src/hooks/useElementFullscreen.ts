@@ -1,4 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  canUseElementFullscreen,
+  exitDocumentFullscreen,
+  FULLSCREEN_CHANGE_EVENTS,
+  getFullscreenElement,
+  requestElementFullscreen,
+} from "../utils/fullscreen";
 
 export function useElementFullscreen(onChange?: (active: boolean) => void) {
   const rootRef = useRef<HTMLDivElement | null>(null);
@@ -6,28 +13,32 @@ export function useElementFullscreen(onChange?: (active: boolean) => void) {
 
   useEffect(() => {
     const handleFullscreenChange = () => {
-      const active = document.fullscreenElement === rootRef.current;
+      const active = getFullscreenElement() === rootRef.current;
       setIsFullscreen(active);
       onChange?.(active);
     };
 
-    document.addEventListener("fullscreenchange", handleFullscreenChange);
-    return () => document.removeEventListener("fullscreenchange", handleFullscreenChange);
+    FULLSCREEN_CHANGE_EVENTS.forEach((event) =>
+      document.addEventListener(event, handleFullscreenChange),
+    );
+    return () =>
+      FULLSCREEN_CHANGE_EVENTS.forEach((event) =>
+        document.removeEventListener(event, handleFullscreenChange),
+      );
   }, [onChange]);
 
   const enterFullscreen = useCallback(async () => {
     const el = rootRef.current;
-    if (!el || document.fullscreenElement === el) return;
-    await el.requestFullscreen();
+    if (!el || getFullscreenElement() === el) return;
+    await requestElementFullscreen(el);
   }, []);
 
   const exitFullscreen = useCallback(async () => {
-    if (!document.fullscreenElement) return;
-    await document.exitFullscreen();
+    await exitDocumentFullscreen();
   }, []);
 
   const toggleFullscreen = useCallback(async () => {
-    if (document.fullscreenElement === rootRef.current) {
+    if (getFullscreenElement() === rootRef.current) {
       await exitFullscreen();
     } else {
       await enterFullscreen();
@@ -40,6 +51,6 @@ export function useElementFullscreen(onChange?: (active: boolean) => void) {
     enterFullscreen,
     exitFullscreen,
     toggleFullscreen,
-    supported: typeof document !== "undefined" && document.fullscreenEnabled,
+    supported: canUseElementFullscreen(rootRef.current),
   };
 }

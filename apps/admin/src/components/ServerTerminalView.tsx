@@ -8,6 +8,7 @@ import { useTranslation } from "react-i18next";
 import { useElementFullscreen } from "../hooks/useElementFullscreen";
 import { useServerTerminal } from "../hooks/useServerTerminal";
 import { useTerminalSplitPane } from "../hooks/useTerminalSplitPane";
+import { getFullscreenElement } from "../utils/fullscreen";
 import type { ServerRecord } from "./ServerFormDrawer";
 import { TerminalAiChat } from "./TerminalAiChat";
 import { TerminalPromptIcon } from "./TerminalPromptIcon";
@@ -60,9 +61,8 @@ export function ServerTerminalView({
     terminal.scheduleFit();
   }, [terminal.scheduleFit]);
 
-  const { rootRef, isFullscreen, toggleFullscreen, supported } = useElementFullscreen(
-    handleFullscreenChange,
-  );
+  const { rootRef, isFullscreen, exitFullscreen, toggleFullscreen, supported } =
+    useElementFullscreen(handleFullscreenChange);
 
   const { aiSplitPct, startDrag } = useTerminalSplitPane(() => terminal.scheduleFit());
 
@@ -71,15 +71,15 @@ export function ServerTerminalView({
   }, [aiCollapsed, aiSplitPct, isFullscreen, terminal.scheduleFit]);
 
   useEffect(() => {
-    if (!active && document.fullscreenElement === rootRef.current) {
-      void document.exitFullscreen();
+    if (!active && getFullscreenElement() === rootRef.current) {
+      void exitFullscreen();
     }
     return () => {
-      if (document.fullscreenElement === rootRef.current) {
-        void document.exitFullscreen();
+      if (getFullscreenElement() === rootRef.current) {
+        void exitFullscreen();
       }
     };
-  }, [active, rootRef]);
+  }, [active, exitFullscreen, rootRef]);
 
   const splitStyle = {
     "--ops-terminal-split-bg": token.colorFillAlter,
