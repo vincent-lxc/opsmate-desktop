@@ -85,7 +85,7 @@ jobs:
           --all-targets --all-features -- -D warnings
 
       - name: cargo test
-        run: cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --all-targets
+        run: cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --all-targets -- --test-threads=1
 
       - name: Ensure macOS dual Apple targets
         run: |
@@ -262,7 +262,7 @@ jobs:
 
       - name: cargo test
         shell: bash
-        run: cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --all-targets
+        run: cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --all-targets -- --test-threads=1
 
       - name: Tauri build unsigned NSIS
         shell: bash
@@ -389,7 +389,7 @@ jobs:
           --all-targets --all-features -- -D warnings
 
       - name: cargo test
-        run: cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --all-targets
+        run: cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --all-targets -- --test-threads=1
 
       - name: Tauri build AppImage and deb
         run: |

@@ -111,7 +111,7 @@ jobs:
           --all-targets --all-features -- -D warnings
 
       - name: cargo test
-        run: cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --all-targets
+        run: cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --all-targets -- --test-threads=1
 
       - name: Ensure macOS dual Apple targets (universal)
         if: matrix.platform == 'macos'
