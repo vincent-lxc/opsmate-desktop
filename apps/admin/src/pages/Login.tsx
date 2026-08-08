@@ -143,18 +143,32 @@ export function LoginPage() {
   }, []);
 
   useEffect(() => {
-    api<LogtoPublicConfig>("/api/auth/logto/config")
-      .then(setLogtoConfig)
-      .catch(() =>
-        setLogtoConfig({
-          enabled: false,
-          endpoint: null,
-          appId: null,
-          redirectUri: "",
-          postLogoutRedirectUri: "",
-          scopes: [],
-        }),
-      );
+    if (isDesktopRuntime()) {
+      // Desktop starts Logto entirely in Rust via auth_begin_logto. The generic
+      // cloud proxy intentionally blocks Logto config/exchange routes, so do
+      // not use that proxy as a UI availability check here.
+      setLogtoConfig({
+        enabled: true,
+        endpoint: "native",
+        appId: "native",
+        redirectUri: "",
+        postLogoutRedirectUri: "",
+        scopes: [],
+      });
+    } else {
+      api<LogtoPublicConfig>("/api/auth/logto/config")
+        .then(setLogtoConfig)
+        .catch(() =>
+          setLogtoConfig({
+            enabled: false,
+            endpoint: null,
+            appId: null,
+            redirectUri: "",
+            postLogoutRedirectUri: "",
+            scopes: [],
+          }),
+        );
+    }
     api<WidgetConfig>("/api/auth/telegram-widget")
       .then(setWidget)
       .catch(() => setWidget({ enabled: false, configured: false }));
