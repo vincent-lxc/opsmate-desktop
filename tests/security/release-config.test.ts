@@ -267,7 +267,7 @@ describe("Task 5 release config", () => {
         /uses:\s*actions\/download-artifact@([^\s#]+)/g,
       ),
     ].map((m) => m[1]);
-    expect(downloadUses).toHaveLength(2);
+    expect(downloadUses).toHaveLength(1);
     expect(
       downloadUses.every((r) => r === REQUIRED_ACTIONS_DOWNLOAD_ARTIFACT_SHA),
     ).toBe(true);

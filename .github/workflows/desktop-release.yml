@@ -319,6 +319,9 @@ jobs:
           retention-days: 14
 
   linux:
+    # The reviewed desktop core is a macOS MVP. Its production random source
+    # intentionally fails closed off macOS, so do not publish unusable Linux installers.
+    if: ${{ false }}
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout
@@ -409,7 +412,7 @@ jobs:
           retention-days: 14
 
   release:
-    needs: [macos, linux]
+    needs: [macos]
     runs-on: ubuntu-24.04
     environment: desktop-release
     permissions:
@@ -424,14 +427,7 @@ jobs:
           name: opsmate-macos-signed-notarized
           path: opsmate-macos-signed-notarized
 
-      - name: Download Linux release
-        # actions/download-artifact@v8.0.1 (using: node24; pin full tag commit SHA)
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
-        with:
-          name: opsmate-linux-release
-          path: opsmate-linux-release
-
-      # Flatten nested artifact trees (Linux keeps appimage/ + deb/; macOS may nest too).
+      # Flatten the signed macOS artifact tree.
       # Never pass directories to sha256sum/gh; copy regular files only with collision detection.
       - name: Stage release assets (recursive, fail-closed)
         run: |
@@ -451,7 +447,7 @@ jobs:
             # Deterministic walk: sorted paths, regular files only (no dirs / symlinks as assets).
             while IFS= read -r -d '' f; do
               case "${platform}:${f}" in
-                macos:*.dmg|linux:*.AppImage|linux:*.deb) ;;
+                macos:*.dmg) ;;
                 *) continue ;;
               esac
               local base
@@ -472,7 +468,6 @@ jobs:
           }
 
           stage_platform "opsmate-macos-signed-notarized" macos
-          stage_platform "opsmate-linux-release" linux
 
       - name: Compute SHA256SUMS
         run: |
@@ -497,7 +492,7 @@ jobs:
           gh release create "$GITHUB_REF_NAME" \
             --repo "$GITHUB_REPOSITORY" \
             --title "$GITHUB_REF_NAME" \
-            --notes "OpsMate Desktop pre-release $GITHUB_REF_NAME (signed and notarized macOS DMG; Linux AppImage+deb; Windows is not included)." \
+            --notes "OpsMate Desktop pre-release $GITHUB_REF_NAME (signed and notarized macOS DMG; Linux is not included; Windows is not included in the macOS MVP)." \
             --prerelease \
             -- \
             "${files[@]}" \
