@@ -1,0 +1,48 @@
+/* Module list tables: horizontal scroll on table body, paginator stays full width */
+.module-table-card .ant-pro-table {
+  min-width: 0;
+}
+
+.module-table-card .ant-table-wrapper {
+  min-width: 0;
+}
+
+.module-table-card .ant-table-pagination.ant-pagination {
+  flex-wrap: wrap;
+  row-gap: 8px;
+  padding-right: 16px;
+}
+
+/* Expanded detail aligns with first data column (e.g. 显示名称), not under +/- */
+.ant-table-wrapper .module-table-expanded-row > .ant-table-cell {
+  padding: 8px 16px 8px 0 !important;
+}
+
+.ant-table-wrapper .module-table-detail-panel {
+  min-width: 0;
+}
+
+.ant-table-wrapper .module-table-detail-panel .ant-tabs-nav {
+  margin-bottom: 8px;
+}
+
+.ant-table-wrapper .problem-detail-panel {
+  margin: 4px 16px 12px;
+  padding: 16px;
+  background: var(--ant-color-fill-quaternary, rgba(0, 0, 0, 0.02));
+  border: 1px solid var(--ant-color-border-secondary, rgba(0, 0, 0, 0.06));
+  border-radius: 8px;
+}
+
+.ant-table-wrapper .problem-detail-panel .problem-detail-text {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.6;
+}
+
+.ant-table-wrapper .problem-detail-panel .problem-detail-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}

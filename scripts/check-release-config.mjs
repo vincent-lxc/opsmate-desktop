@@ -421,10 +421,10 @@ export function checkReleaseConfig() {
 
 /** Exact platform Tauri CLI invocations required by Task 6 rework. */
 export const REQUIRED_MAC_TAURI_CMD =
-  "npm run tauri -- build --target universal-apple-darwin --bundles dmg";
-export const REQUIRED_WIN_TAURI_CMD = "npm run tauri -- build --bundles nsis";
+  "npm --prefix apps/desktop run tauri -- build --target universal-apple-darwin --bundles dmg";
+export const REQUIRED_WIN_TAURI_CMD = "npm --prefix apps/desktop run tauri -- build --bundles nsis";
 export const REQUIRED_LINUX_TAURI_CMD =
-  "npm run tauri -- build --bundles appimage,deb";
+  "npm --prefix apps/desktop run tauri -- build --bundles appimage,deb";
 
 const GH_ACTION_SHA_HEX = /^[0-9a-f]{40}$/i;
 const GH_ACTION_USES_RE =

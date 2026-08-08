@@ -1,3 +1,5 @@
+> **Authoritative release source:** `apps/admin` and `apps/desktop` in this repository. Root `src` and `src-tauri` are legacy history and are not release inputs.
+
 # OpsMate Desktop
 
 Independent **pre-release** desktop client for OpsMate (运维助手).

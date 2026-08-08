@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "families": [
+    { "prefix": "/api/dashboard/overview", "methods": ["GET"] },
+    { "prefix": "/api/auth/me", "methods": ["GET", "POST", "DELETE"] },
+    { "prefix": "/api/auth/telegram-widget", "methods": ["GET"] },
+    { "prefix": "/api/auth/ws-token", "methods": ["POST"] },
+
+    { "prefix": "/api/subscription/ai", "methods": ["GET", "POST"] },
+    { "prefix": "/api/servers", "methods": ["GET", "POST", "PATCH", "DELETE"] },
+    { "prefix": "/api/security/credentials", "methods": ["GET", "POST", "PATCH", "DELETE"] },
+    { "prefix": "/api/monitoring", "methods": ["GET", "POST", "PATCH", "DELETE"] },
+    { "prefix": "/api/problems", "methods": ["GET", "POST"] },
+    { "prefix": "/api/oncall/remediation-queue", "methods": ["GET", "POST"] },
+    { "prefix": "/api/incident-reports", "methods": ["GET", "POST"] }
+  ],
+  "blocked": [
+    "/api/auth/logto/config",
+    "/api/auth/logto/exchange",
+    "/api/auth/login",
+    "/api/auth/refresh"
+  ]
+}

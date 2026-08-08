@@ -1,0 +1,58 @@
+[package]
+name = "opsmate-desktop"
+version = "0.1.0"
+description = "OpsMate Desktop — local credential vault shell"
+authors = ["OpsMate"]
+edition = "2021"
+rust-version = "1.92"
+
+[lib]
+name = "opsmate_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "=2.6.3", features = [] }
+
+[dependencies]
+# Tauri 2 shell + plugins (exact pins — plan §1.2)
+tauri = { version = "=2.11.5", features = [] }
+tauri-plugin-stronghold = "=2.3.1"
+tauri-plugin-deep-link = "=2.4.9"
+# Unique system-browser opener path (OpenerExt). Forbidden: `open` crate.
+tauri-plugin-opener = "=2.5.4"
+
+# Product SSH — russh 0.62.5 only (forbidden: 0.54.6, ssh2)
+russh = "=0.62.5"
+
+# Native UX helpers
+rfd = "=0.17.2"
+arboard = "=3.6.1"
+
+# Crypto / HTTP / ser / async
+sha2 = "=0.10.8"
+hex = "=0.4.3"
+# Exact pin matching tauri-plugin-stronghold → rust-argon2 2.1.0 (no version fork).
+rust-argon2 = "=2.1.0"
+reqwest = { version = "=0.12.15", default-features = false, features = ["rustls-tls", "json"] }
+# Plan §1.2 listed 1.8.1, but russh 0.62.5 → ssh-key 0.7.0-rc.11 requires zeroize ^1.9.
+# Exact pin raised to 1.9.0 so the full tree resolves (no 0.54.6/ssh2/open).
+zeroize = { version = "=1.9.0", default-features = false, features = ["alloc"] }
+serde = { version = "=1.0.219", features = ["derive"] }
+serde_json = "=1.0.140"
+tokio = { version = "=1.44.2", features = ["rt-multi-thread", "macros", "sync", "time"] }
+thiserror = "=1.0.69"
+anyhow = "=1.0.97"
+tokio-tungstenite = { version = "0.26.2", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
+futures-util = { version = "0.3.31", default-features = false, features = ["std", "sink"] }
+regex = "1.13.1"
+
+# macOS-only ObjC bindings (NSSecureTextField / NSAlert / NSWorkspace sleep-wake)
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "=0.6.4"
+objc2-app-kit = { version = "=0.3.2", features = ["NSWorkspace"] }
+# Required for NSString/NSRect used by NSSecureTextField secure prompts (Task D3).
+objc2-foundation = "=0.3.2"
+
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]

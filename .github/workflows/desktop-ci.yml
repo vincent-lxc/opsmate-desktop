@@ -66,7 +66,7 @@ jobs:
             ~/.cargo/registry/index/
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
-            src-tauri/target/
+            apps/desktop/src-tauri/target/
           key: ${{ runner.os }}-cargo-1.92.0-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-1.92.0-
@@ -103,15 +103,15 @@ jobs:
         run: npm run build:web
 
       - name: cargo fmt
-        run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
+        run: cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml -- --check
 
       - name: cargo clippy (strict)
         run: >
-          cargo clippy --manifest-path src-tauri/Cargo.toml
+          cargo clippy --manifest-path apps/desktop/src-tauri/Cargo.toml
           --all-targets --all-features -- -D warnings
 
       - name: cargo test
-        run: cargo test --manifest-path src-tauri/Cargo.toml --all-targets
+        run: cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --all-targets
 
       - name: Ensure macOS dual Apple targets (universal)
         if: matrix.platform == 'macos'
@@ -126,7 +126,7 @@ jobs:
           set -euo pipefail
           rustc --version | grep -F "1.92.0"
           # Explicit --bundles dmg: global tauri.conf targets must not pull nsis/appimage/deb on macOS.
-          npm run tauri -- build --target universal-apple-darwin --bundles dmg
+          npm --prefix apps/desktop run tauri -- build --target universal-apple-darwin --bundles dmg
 
       - name: Tauri build (Windows NSIS)
         if: matrix.platform == 'windows'
@@ -134,14 +134,14 @@ jobs:
         run: |
           set -euo pipefail
           rustc --version | grep -F "1.92.0"
-          npm run tauri -- build --bundles nsis
+          npm --prefix apps/desktop run tauri -- build --bundles nsis
 
       - name: Tauri build (Linux AppImage + deb)
         if: matrix.platform == 'linux'
         run: |
           set -euo pipefail
           rustc --version | grep -F "1.92.0"
-          npm run tauri -- build --bundles appimage,deb
+          npm --prefix apps/desktop run tauri -- build --bundles appimage,deb
 
       - name: Upload internal-unsigned macOS artifacts
         if: matrix.platform == 'macos'
@@ -150,7 +150,7 @@ jobs:
         with:
           name: opsmate-macos-internal-unsigned
           path: |
-            src-tauri/target/universal-apple-darwin/release/bundle/dmg/*
+            apps/desktop/src-tauri/target/universal-apple-darwin/release/bundle/dmg/*
           if-no-files-found: error
           retention-days: 3
 
@@ -161,7 +161,7 @@ jobs:
         with:
           name: opsmate-windows-internal-unsigned
           path: |
-            src-tauri/target/release/bundle/nsis/*
+            apps/desktop/src-tauri/target/release/bundle/nsis/*
           if-no-files-found: error
           retention-days: 3
 
@@ -172,7 +172,7 @@ jobs:
         with:
           name: opsmate-linux-internal-unsigned
           path: |
-            src-tauri/target/release/bundle/appimage/*
-            src-tauri/target/release/bundle/deb/*
+            apps/desktop/src-tauri/target/release/bundle/appimage/*
+            apps/desktop/src-tauri/target/release/bundle/deb/*
           if-no-files-found: error
           retention-days: 3

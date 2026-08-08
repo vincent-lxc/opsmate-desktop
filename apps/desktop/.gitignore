@@ -1,0 +1,3 @@
+# Reproducible Cargo/Tauri build outputs (do not ignore Cargo.lock).
+src-tauri/target/
+src-tauri/gen/schemas/

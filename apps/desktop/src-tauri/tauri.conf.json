@@ -1,0 +1,40 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "OpsMate",
+  "version": "0.1.0",
+  "identifier": "sh.itops.opsmate",
+  "build": {
+    "beforeBuildCommand": "bash ../../scripts/desktop-build-admin-dist.sh",
+    "frontendDist": "../../admin/dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "OpsMate",
+        "width": 1200,
+        "height": 800
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; connect-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'"
+    },
+    "withGlobalTauri": false
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["app"],
+    "icon": [
+      "icons/icon.png"
+    ]
+  },
+  "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": [
+          "opsmate"
+        ]
+      }
+    }
+  }
+}

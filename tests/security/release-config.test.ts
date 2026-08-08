@@ -1172,7 +1172,7 @@ jobs:
         with:
           path: src-tauri/target
           key: cargo-mac
-      - run: npm run tauri -- build --target universal-apple-darwin --bundles dmg
+      - run: npm --prefix apps/desktop run tauri -- build --target universal-apple-darwin --bundles dmg
       - run: hdiutil attach out.dmg -readonly -nobrowse -mountpoint mount && codesign --verify --deep --strict mount/OpsMate.app && hdiutil detach mount
       - run: spctl --assess --type install out.dmg
       - run: xcrun stapler validate out.dmg
@@ -1194,7 +1194,7 @@ jobs:
         with:
           path: src-tauri/target
           key: cargo-win
-      - run: npm run tauri -- build --bundles nsis
+      - run: npm --prefix apps/desktop run tauri -- build --bundles nsis
       - name: upload unsigned nsis
         id: unsigned_nsis
         uses: ${upload}
@@ -1232,7 +1232,7 @@ jobs:
         with:
           path: src-tauri/target
           key: cargo-linux
-      - run: npm run tauri -- build --bundles appimage,deb
+      - run: npm --prefix apps/desktop run tauri -- build --bundles appimage,deb
       - uses: ${upload}
         with:
           name: ${ARTIFACT_LINUX}
@@ -1696,9 +1696,9 @@ describe("Task 8A desktop signed-release controls", () => {
     // put upload before ordered verify steps (after setup-node + build)
     yml = yml.replace(
       new RegExp(
-        String.raw`- run: npm run tauri -- build --target universal-apple-darwin --bundles dmg\n      - run: hdiutil attach out.dmg -readonly -nobrowse -mountpoint mount && codesign --verify --deep --strict mount/OpsMate.app && hdiutil detach mount\n      - run: spctl --assess --type install out.dmg\n      - run: xcrun stapler validate out.dmg\n      - uses: actions\/upload-artifact@${REQUIRED_ACTIONS_UPLOAD_ARTIFACT_SHA}\n        with:\n          name: opsmate-macos-signed-notarized\n          path: out.dmg\n`,
+        String.raw`- run: npm --prefix apps/desktop run tauri -- build --target universal-apple-darwin --bundles dmg\n      - run: hdiutil attach out.dmg -readonly -nobrowse -mountpoint mount && codesign --verify --deep --strict mount/OpsMate.app && hdiutil detach mount\n      - run: spctl --assess --type install out.dmg\n      - run: xcrun stapler validate out.dmg\n      - uses: actions\/upload-artifact@${REQUIRED_ACTIONS_UPLOAD_ARTIFACT_SHA}\n        with:\n          name: opsmate-macos-signed-notarized\n          path: out.dmg\n`,
       ),
-      `- run: npm run tauri -- build --target universal-apple-darwin --bundles dmg
+      `- run: npm --prefix apps/desktop run tauri -- build --target universal-apple-darwin --bundles dmg
       - uses: ${REQUIRED_ACTIONS_UPLOAD_ARTIFACT}
         with:
           name: ${ARTIFACT_MACOS}
