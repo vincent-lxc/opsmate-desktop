@@ -44,6 +44,10 @@ pub static FAMILIES: &[RouteFamily] = &[
         methods: &["POST"],
     },
     RouteFamily {
+        prefix: "/api/entitlements/current",
+        methods: &["GET"],
+    },
+    RouteFamily {
         prefix: "/api/subscription/ai",
         methods: &["GET", "POST"],
     },

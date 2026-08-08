@@ -77,6 +77,43 @@ export const FULL_FEATURES: FeatureMatrix = {
   dedicated_bot: true,
 };
 
+/** Permanent Free surface. Keep aligned with the backend plan upper bound. */
+export const FREE_FEATURES: FeatureMatrix = {
+  monitoring_projects: true,
+  monitoring_center: true,
+  foundation: true,
+  applications: true,
+  dependency_manifests: true,
+  patrol: true,
+  basic_problem: true,
+  event_center: true,
+  basic_ai_diagnosis: true,
+  oncall_closure: false,
+  telegram: true,
+  external_risk: false,
+  business_observability: false,
+  team_governance: false,
+  encrypted_credentials: true,
+  pdf_postmortem: false,
+  long_audit_retention: false,
+  emergency_stoploss: false,
+  sso: false,
+  ha: false,
+  private_ai: false,
+  dedicated_bot: false,
+};
+
+export const FREE_ENTITLEMENTS: Entitlements = {
+  plan: "free",
+  status: "active",
+  host_quota: null,
+  ai_quota: 500,
+  trial_ends_at: null,
+  features: FREE_FEATURES,
+  access_profile_key: "free",
+  menu_paths: null,
+};
+
 export const FULL_ENTITLEMENTS: Entitlements = {
   plan: "enterprise",
   status: "active",
@@ -115,14 +152,17 @@ export function normalizeEntitlements(payload: EntitlementsResponse): Entitlemen
   const plan: EditionPlan =
     payload.plan === "free" || payload.plan === "enterprise"
       ? payload.plan
-      : "enterprise";
+      : "free";
   return {
     plan,
     status: payload.status ?? "active",
     host_quota: payload.host_quota ?? null,
     ai_quota: payload.ai_quota ?? null,
     trial_ends_at: payload.trial_ends_at ?? null,
-    features: coerceFeatures(payload.features, FULL_FEATURES),
+    features: coerceFeatures(
+      payload.features,
+      plan === "enterprise" ? FULL_FEATURES : FREE_FEATURES,
+    ),
     access_profile_key:
       typeof payload.access_profile_key === "string" ? payload.access_profile_key : null,
     menu_paths: Array.isArray(payload.menu_paths)

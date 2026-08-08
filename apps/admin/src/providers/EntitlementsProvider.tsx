@@ -9,13 +9,14 @@ import {
   type ReactNode,
 } from "react";
 import {
+  FREE_ENTITLEMENTS,
   FULL_ENTITLEMENTS,
   fetchEntitlements,
   normalizeEntitlements,
   type Entitlements,
   type FeatureKey,
 } from "../services/entitlements";
-import { getToken } from "../services/auth/roles";
+import { hasActiveSession } from "../services/auth/roles";
 
 type EntitlementsContextValue = {
   entitlements: Entitlements;
@@ -41,18 +42,19 @@ type EntitlementsProviderProps = {
  *
  * Resolution order:
  *   1. Explicit `value` prop (tests) — used verbatim, no fetch.
- *   2. No auth token (auth disabled / dev) — fail-open with FULL_ENTITLEMENTS
+ *   2. No active session (auth disabled / dev) — use FULL_ENTITLEMENTS
  *      so legacy/internal installs keep the complete menu (R17).
  *   3. Authenticated — fetch `/api/entitlements/current`; on success normalize,
- *      on any error fall back to FULL_ENTITLEMENTS (backend gates still enforce
- *      per-request, so a fetch failure must never lock the UI).
+ *      on any error fall back to the permanent Free surface. Desktop sessions
+ *      intentionally keep bearer tokens out of WebView storage, so login state
+ *      must come from `hasActiveSession()` rather than `getToken()`.
  */
 export function EntitlementsProvider({
   children,
   value,
 }: EntitlementsProviderProps) {
   const [entitlements, setEntitlements] = useState<Entitlements>(
-    value ?? FULL_ENTITLEMENTS,
+    value ?? FREE_ENTITLEMENTS,
   );
   const [loading, setLoading] = useState<boolean>(!value);
   const fetchSeqRef = useRef(0);
@@ -64,8 +66,7 @@ export function EntitlementsProvider({
       setLoading(false);
       return;
     }
-    const token = getToken();
-    if (!token) {
+    if (!hasActiveSession()) {
       // Auth disabled (dev/test) or pre-login — fail open with full menu.
       setEntitlements(FULL_ENTITLEMENTS);
       setLoading(false);
@@ -80,8 +81,8 @@ export function EntitlementsProvider({
       })
       .catch(() => {
         if (seq !== fetchSeqRef.current) return;
-        // Fail open: backend gates remain the source of truth.
-        setEntitlements(FULL_ENTITLEMENTS);
+        // Authenticated SaaS sessions must never gain Enterprise UI on error.
+        setEntitlements(FREE_ENTITLEMENTS);
       })
       .finally(() => {
         if (seq !== fetchSeqRef.current) return;

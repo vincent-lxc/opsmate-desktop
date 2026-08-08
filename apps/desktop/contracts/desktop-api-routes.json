@@ -5,6 +5,7 @@
     { "prefix": "/api/auth/me", "methods": ["GET", "POST", "DELETE"] },
     { "prefix": "/api/auth/telegram-widget", "methods": ["GET"] },
     { "prefix": "/api/auth/ws-token", "methods": ["POST"] },
+    { "prefix": "/api/entitlements/current", "methods": ["GET"] },
 
     { "prefix": "/api/subscription/ai", "methods": ["GET", "POST"] },
     { "prefix": "/api/servers", "methods": ["GET", "POST", "PATCH", "DELETE"] },

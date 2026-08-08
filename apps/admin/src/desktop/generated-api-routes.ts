@@ -27,6 +27,7 @@ export const FAMILIES: readonly RouteFamily[] = [
   { prefix: "/api/auth/me", methods: ["GET", "POST", "DELETE"] as const },
   { prefix: "/api/auth/telegram-widget", methods: ["GET"] as const },
   { prefix: "/api/auth/ws-token", methods: ["POST"] as const },
+  { prefix: "/api/entitlements/current", methods: ["GET"] as const },
   { prefix: "/api/subscription/ai", methods: ["GET", "POST"] as const },
   { prefix: "/api/servers", methods: ["GET", "POST", "PATCH", "DELETE"] as const },
   { prefix: "/api/security/credentials", methods: ["GET", "POST", "PATCH", "DELETE"] as const },

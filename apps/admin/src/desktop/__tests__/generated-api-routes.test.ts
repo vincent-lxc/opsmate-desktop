@@ -16,6 +16,7 @@ const ALLOWED: Array<[string, string]> = [
   ["POST", "/api/auth/me"],
   ["DELETE", "/api/auth/me"],
   ["GET", "/api/auth/telegram-widget"],
+  ["GET", "/api/entitlements/current"],
   ["GET", "/api/subscription/ai"],
   ["POST", "/api/subscription/ai"],
   ["PATCH", "/api/servers/srv_1"],
