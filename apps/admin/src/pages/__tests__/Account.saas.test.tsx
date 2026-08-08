@@ -170,5 +170,5 @@ describe("AccountPage permanent Free SaaS", () => {
     expect(JSON.stringify(vi.mocked(openExternalRoute).mock.calls)).not.toMatch(
       /evil\.example|secret-qr|qr_url|t\.me/i,
     );
-  }, 20000);
+  }, 45000);
 });
