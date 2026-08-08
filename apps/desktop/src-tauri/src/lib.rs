@@ -96,10 +96,7 @@ fn handle_auth_deep_link(app: &AppHandle, store: &AuthStore, url: &str) {
         Ok(()) => emit_auth_session_status(app, store),
         Err(e) => {
             // Secret-free log only - never Display of free-form bodies/tokens.
-            eprintln!(
-                "[auth] deep link handling failed: {}",
-                map_auth_public(e)
-            );
+            eprintln!("[auth] deep link handling failed: {}", map_auth_public(e));
             // The WebView must leave its loading state even when native auth fails.
             emit_auth_session_status(app, store);
         }
