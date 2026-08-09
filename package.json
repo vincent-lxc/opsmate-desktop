@@ -36,7 +36,7 @@
     "@vitejs/plugin-react": "4.7.0",
     "jsdom": "29.1.1",
     "typescript": "5.9.3",
-    "vite": "6.4.3",
+    "vite": "8.2.0",
     "vitest": "4.1.9"
   },
   "license": "MPL-2.0"
