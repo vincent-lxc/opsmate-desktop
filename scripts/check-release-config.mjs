@@ -421,10 +421,10 @@ export function checkReleaseConfig() {
 
 /** Exact platform Tauri CLI invocations required by Task 6 rework. */
 export const REQUIRED_MAC_TAURI_CMD =
-  "npm run tauri -- build --target universal-apple-darwin --bundles dmg";
-export const REQUIRED_WIN_TAURI_CMD = "npm run tauri -- build --bundles nsis";
+  "npm --prefix apps/desktop run tauri -- build --target universal-apple-darwin --bundles dmg";
+export const REQUIRED_WIN_TAURI_CMD = "npm --prefix apps/desktop run tauri -- build --bundles nsis";
 export const REQUIRED_LINUX_TAURI_CMD =
-  "npm run tauri -- build --bundles appimage,deb";
+  "npm --prefix apps/desktop run tauri -- build --bundles appimage,deb";
 
 const GH_ACTION_SHA_HEX = /^[0-9a-f]{40}$/i;
 const GH_ACTION_USES_RE =
@@ -1342,6 +1342,7 @@ export function checkDesktopReleaseWorkflowContent(yml) {
       "desktop-release.yml job 'windows' must be explicitly disabled with job-level if: ${{ false }}",
     );
   }
+  const linuxDisabled = jobHasExplicitFalseCondition(jobs.linux);
 
   // react-router 8.3 engines: each build job must use setup-node with exact Node pin.
   // release job need not install Node (artifact staging / gh only).
@@ -1654,45 +1655,48 @@ export function checkDesktopReleaseWorkflowContent(yml) {
     }
   }
 
-  // Linux
-  if (!/appimage/i.test(jobs.linux)) {
-    errors.push("desktop-release.yml job 'linux' must build AppImage");
-  }
-  if (!/\bdeb\b/i.test(jobs.linux)) {
-    errors.push("desktop-release.yml job 'linux' must build deb");
-  }
-  const linSteps = extractJobSteps(jobs.linux);
-  let linBuild = -1;
-  let linUpload = -1;
-  for (let i = 0; i < linSteps.length; i++) {
-    if (/appimage|\bdeb\b|tauri.*build/i.test(linSteps[i])) linBuild = i;
-    if (
-      /actions\/upload-artifact@/.test(linSteps[i]) &&
-      linSteps[i].includes(ARTIFACT_LINUX)
-    ) {
-      linUpload = i;
+  // Linux remains available as a future release template, but the reviewed
+  // desktop core is currently a macOS MVP and may explicitly disable this job.
+  if (!linuxDisabled) {
+    if (!/appimage/i.test(jobs.linux)) {
+      errors.push("desktop-release.yml job 'linux' must build AppImage");
     }
-  }
-  if (linUpload < 0) {
-    errors.push(
-      `desktop-release.yml job 'linux' must upload-artifact name ${ARTIFACT_LINUX}`,
-    );
-  } else if (linBuild >= 0 && linUpload < linBuild) {
-    errors.push(
-      `desktop-release.yml job 'linux' must upload ${ARTIFACT_LINUX} after build`,
-    );
-  } else {
-    const up = linSteps[linUpload];
-    if (
-      !/\.AppImage\b/.test(up) ||
-      !/\.deb\b/.test(up) ||
-      /^\s*path:\s*[^|\n]*\/$/m.test(up) ||
-      /appimage\/\*(?!\.AppImage)/i.test(up) ||
-      /deb\/\*(?!\.deb)/i.test(up)
-    ) {
+    if (!/\bdeb\b/i.test(jobs.linux)) {
+      errors.push("desktop-release.yml job 'linux' must build deb");
+    }
+    const linSteps = extractJobSteps(jobs.linux);
+    let linBuild = -1;
+    let linUpload = -1;
+    for (let i = 0; i < linSteps.length; i++) {
+      if (/appimage|\bdeb\b|tauri.*build/i.test(linSteps[i])) linBuild = i;
+      if (
+        /actions\/upload-artifact@/.test(linSteps[i]) &&
+        linSteps[i].includes(ARTIFACT_LINUX)
+      ) {
+        linUpload = i;
+      }
+    }
+    if (linUpload < 0) {
       errors.push(
-        "desktop-release.yml Linux artifact upload must include only final installers (*.AppImage and *.deb), not AppDir/build-tree contents",
+        `desktop-release.yml job 'linux' must upload-artifact name ${ARTIFACT_LINUX}`,
       );
+    } else if (linBuild >= 0 && linUpload < linBuild) {
+      errors.push(
+        `desktop-release.yml job 'linux' must upload ${ARTIFACT_LINUX} after build`,
+      );
+    } else {
+      const up = linSteps[linUpload];
+      if (
+        !/\.AppImage\b/.test(up) ||
+        !/\.deb\b/.test(up) ||
+        /^\s*path:\s*[^|\n]*\/$/m.test(up) ||
+        /appimage\/\*(?!\.AppImage)/i.test(up) ||
+        /deb\/\*(?!\.deb)/i.test(up)
+      ) {
+        errors.push(
+          "desktop-release.yml Linux artifact upload must include only final installers (*.AppImage and *.deb), not AppDir/build-tree contents",
+        );
+      }
     }
   }
 
@@ -1713,21 +1717,23 @@ export function checkDesktopReleaseWorkflowContent(yml) {
     }
   } else {
     errors.push(
-      "desktop-release.yml job 'release' must declare needs exactly [macos, linux] while Windows is disabled",
+      `desktop-release.yml job 'release' must declare needs exactly [macos${linuxDisabled ? "" : ", linux"}] for the active release platforms`,
     );
   }
-  const expectedNeeds = new Set(["macos", "linux"]);
+  const expectedNeeds = new Set(linuxDisabled ? ["macos"] : ["macos", "linux"]);
   if (
     needNames.size !== expectedNeeds.size ||
     [...expectedNeeds].some((name) => !needNames.has(name))
   ) {
     errors.push(
-      "desktop-release.yml job 'release' must declare needs exactly [macos, linux] while Windows is disabled",
+      `desktop-release.yml job 'release' must declare needs exactly [macos${linuxDisabled ? "" : ", linux"}] for the active release platforms`,
     );
   }
 
   const relSteps = extractJobSteps(rel);
-  const activeReleaseArtifacts = [ARTIFACT_MACOS, ARTIFACT_LINUX];
+  const activeReleaseArtifacts = linuxDisabled
+    ? [ARTIFACT_MACOS]
+    : [ARTIFACT_MACOS, ARTIFACT_LINUX];
   const downloads = new Set();
   let stageIdx = -1;
   let shaIdx = -1;
@@ -1750,8 +1756,7 @@ export function checkDesktopReleaseWorkflowContent(yml) {
       /release-assets/.test(s) &&
       activeReleaseArtifacts.every((name) => s.includes(name)) &&
       /\.dmg\b/.test(s) &&
-      /\.AppImage\b/.test(s) &&
-      /\.deb\b/.test(s) &&
+      (linuxDisabled || (/\.AppImage\b/.test(s) && /\.deb\b/.test(s))) &&
       /\bcase\b/.test(s) &&
       /\bcontinue\b/.test(s) &&
       (/collision/i.test(s) ||
@@ -1802,7 +1807,7 @@ export function checkDesktopReleaseWorkflowContent(yml) {
 
   if (stageIdx < 0) {
     errors.push(
-      "desktop-release.yml release staging must whitelist final installer extensions (.dmg, .AppImage, .deb) while staging recursive regular files from both active artifact roots with collision detection",
+      `desktop-release.yml release staging must whitelist final installer extensions (${linuxDisabled ? ".dmg" : ".dmg, .AppImage, .deb"}) while staging recursive regular files from every active artifact root with collision detection`,
     );
   } else if (lastDl >= 0 && stageIdx < lastDl) {
     errors.push(

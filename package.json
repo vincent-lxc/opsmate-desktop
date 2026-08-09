@@ -2,22 +2,22 @@
   "name": "opsmate-desktop",
   "version": "0.1.0",
   "private": true,
-  "description": "OpsMate secure desktop client \u2014 independent React + Tauri shell",
+  "description": "OpsMate secure desktop client — independent React + Tauri shell",
   "engines": {
     "node": ">=22.22.0"
   },
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build:web": "tsc -p tsconfig.json --noEmit && vite build",
+    "dev": "npm --prefix apps/admin run dev",
+    "build:web": "npm --prefix apps/admin ci && npm --prefix apps/admin test && npm --prefix apps/admin run build && npm --prefix apps/desktop ci",
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
     "contracts:generate": "node scripts/generate-operations.mjs",
     "contracts:check": "node scripts/generate-operations.mjs --check",
-    "tauri": "tauri",
-    "dev:tauri": "tauri dev",
-    "build": "tauri build"
+    "tauri": "npm --prefix apps/desktop run tauri --",
+    "dev:tauri": "npm run build:web && npm --prefix apps/desktop run tauri -- dev",
+    "build": "npm run build:web && npm --prefix apps/desktop run tauri -- build"
   },
   "dependencies": {
     "@tauri-apps/api": "2.11.1",
