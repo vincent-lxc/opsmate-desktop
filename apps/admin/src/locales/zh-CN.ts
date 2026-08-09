@@ -2219,6 +2219,12 @@ const zhCN = {
         initOk: "保险库已初始化",
         unlockOk: "保险库已解锁",
         lockOk: "保险库已锁定",
+        reset: "重置本地保险库",
+        resetConfirmTitle: "永久重置本地保险库？",
+        resetConfirmDescription:
+          "这会永久删除此设备保险库中的全部本地私钥，云端副本不受影响。仅存在于本机的凭据无法恢复。下一步还需要通过原生确认。",
+        resetConfirmAction: "继续原生确认",
+        resetOk: "本地保险库已重置，请重新初始化并设置新密码。",
         importLocal: "导入到本机",
         deleteLocal: "从本机移除",
         deleteLocalConfirmTitle: "从本机移除私钥？",

@@ -141,6 +141,7 @@ fn desktop_ipc_permission_lists_exact_named_commands() {
         "vault_init",
         "vault_unlock",
         "vault_lock",
+        "vault_reset",
         "vault_import",
         "vault_list_meta",
         "vault_delete_local",

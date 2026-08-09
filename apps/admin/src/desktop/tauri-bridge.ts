@@ -19,6 +19,7 @@ export const DESKTOP_IPC_COMMANDS = [
   "vault_init",
   "vault_unlock",
   "vault_lock",
+  "vault_reset",
   "vault_import",
   "vault_list_meta",
   "vault_delete_local",
@@ -156,6 +157,10 @@ export async function vaultUnlock(): Promise<VaultStatusDto> {
 
 export async function vaultLock(): Promise<VaultStatusDto> {
   return desktopInvoke<VaultStatusDto>("vault_lock");
+}
+
+export async function vaultReset(): Promise<VaultStatusDto> {
+  return desktopInvoke<VaultStatusDto>("vault_reset");
 }
 
 export async function vaultListMeta(): Promise<VaultMetaItemDto[]> {

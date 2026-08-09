@@ -2219,6 +2219,12 @@ const enUS = {
         initOk: "Vault initialized",
         unlockOk: "Vault unlocked",
         lockOk: "Vault locked",
+        reset: "Reset local vault",
+        resetConfirmTitle: "Permanently reset the local vault?",
+        resetConfirmDescription:
+          "This permanently deletes all local private keys on this device. Cloud copies are not affected. Local-only credentials cannot be recovered. A native confirmation is required next.",
+        resetConfirmAction: "Continue to native confirmation",
+        resetOk: "Local vault reset. Set a new password to initialize it again.",
         importLocal: "Import to this device",
         deleteLocal: "Remove from this device",
         deleteLocalConfirmTitle: "Remove private key from this device?",

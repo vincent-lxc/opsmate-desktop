@@ -103,6 +103,61 @@ fn authed(tenant: &str, user: &str) -> AuthStore {
     a
 }
 
+#[test]
+fn vault_reset_local_deletes_snapshot_and_salt() {
+    let path = temp_snapshot();
+    let vault = VaultService::new(path.clone());
+    vault
+        .init_with_password(None, Zeroizing::new("reset-password".into()))
+        .unwrap();
+    assert!(path.exists());
+    assert!(salt_path(&path).exists());
+
+    let status = vault.reset_local().unwrap();
+
+    assert!(!path.exists());
+    assert!(!salt_path(&path).exists());
+    assert!(!status.unlocked);
+    assert_eq!(status.locked_reason.as_deref(), Some("not_initialized"));
+    cleanup(&path);
+}
+
+#[test]
+fn vault_reset_local_closes_all_sessions_before_deleting() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
+    struct ResetSink {
+        snapshot: PathBuf,
+        closed_before_delete: AtomicBool,
+    }
+
+    impl SessionLifecycleSink for ResetSink {
+        fn close_all_sessions(&self) {
+            self.closed_before_delete
+                .store(self.snapshot.exists(), Ordering::SeqCst);
+        }
+
+        fn close_sessions_for_credential(&self, _: &crate::auth::NativePrincipal, _: &str) {}
+    }
+
+    let path = temp_snapshot();
+    let vault = VaultService::new(path.clone());
+    vault
+        .init_with_password(None, Zeroizing::new("reset-password".into()))
+        .unwrap();
+    let sink = Arc::new(ResetSink {
+        snapshot: path.clone(),
+        closed_before_delete: AtomicBool::new(false),
+    });
+    vault.set_session_lifecycle_sink(sink.clone());
+
+    vault.reset_local().unwrap();
+
+    assert!(sink.closed_before_delete.load(Ordering::SeqCst));
+    cleanup(&path);
+}
+
 // ─── Fast pure unit tests ────────────────────────────────────────────────────
 
 #[test]
@@ -324,6 +379,7 @@ fn vault_public_commands_boundary_no_identity_or_from_file() {
         "vault_init",
         "vault_unlock",
         "vault_lock",
+        "vault_reset",
         "vault_import",
         "vault_list_meta",
         "vault_delete_local",

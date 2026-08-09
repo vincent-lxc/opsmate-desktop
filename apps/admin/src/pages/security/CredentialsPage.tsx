@@ -27,6 +27,7 @@ import {
   vaultInit,
   vaultListMeta,
   vaultLock,
+  vaultReset,
   vaultStatus,
   vaultUnlock,
   type VaultMetaItemDto,
@@ -656,6 +657,27 @@ export function CredentialsPage({ getDeviceState }: CredentialsPageProps = {}) {
                   >
                     {t("security.credentials.desktop.lock")}
                   </Button>
+                ) : null}
+                {vault && vault.lockedReason !== "not_initialized" ? (
+                  <Popconfirm
+                    title={t("security.credentials.desktop.resetConfirmTitle")}
+                    description={t("security.credentials.desktop.resetConfirmDescription")}
+                    okText={t("security.credentials.desktop.resetConfirmAction")}
+                    cancelText={t("common.cancel")}
+                    okButtonProps={{ danger: true }}
+                    onConfirm={() =>
+                      void runVaultAction(vaultReset, "security.credentials.desktop.resetOk")
+                    }
+                  >
+                    <Button
+                      danger
+                      size="small"
+                      data-testid="credentials-vault-reset"
+                      loading={vaultBusy}
+                    >
+                      {t("security.credentials.desktop.reset")}
+                    </Button>
+                  </Popconfirm>
                 ) : null}
                 <Button
                   size="small"

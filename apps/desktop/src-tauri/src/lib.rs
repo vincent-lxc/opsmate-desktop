@@ -401,6 +401,37 @@ fn vault_lock(vault: State<'_, Arc<VaultService>>) -> Result<VaultStatus, String
     vault.lock().map_err(map_vault)
 }
 
+fn vault_reset_prompt() -> CloudConfirmPrompt {
+    CloudConfirmPrompt {
+        title: "Reset local vault?".into(),
+        message: "This permanently deletes every private key stored in the local vault on this device. Cloud copies are not affected. Local-only keys cannot be recovered. Type RESET LOCAL VAULT to continue.".into(),
+        required_token: "RESET LOCAL VAULT".into(),
+        require_ack_checkbox: true,
+        checkbox_label: "I understand that local-only credentials will be permanently lost.".into(),
+    }
+}
+
+#[tauri::command]
+fn vault_reset(app: AppHandle, vault: State<'_, Arc<VaultService>>) -> Result<VaultStatus, String> {
+    confirm_on_app_main_thread(
+        &app,
+        Arc::new(NativeCloudCustodyConfirmer),
+        vault_reset_prompt(),
+    )
+    .map_err(map_cloud)?;
+    vault.reset_local().map_err(map_vault)
+}
+
+#[cfg(test)]
+#[test]
+fn vault_reset_confirmation_requires_exact_token_and_acknowledgement() {
+    let prompt = vault_reset_prompt();
+    assert_eq!(prompt.required_token, "RESET LOCAL VAULT");
+    assert!(prompt.require_ack_checkbox);
+    assert!(prompt.message.contains("Cloud copies are not affected"));
+    assert!(prompt.message.contains("cannot be recovered"));
+}
+
 #[tauri::command]
 fn vault_import(
     vault: State<'_, Arc<VaultService>>,
@@ -665,6 +696,7 @@ pub fn run() {
             vault_init,
             vault_unlock,
             vault_lock,
+            vault_reset,
             vault_import,
             vault_list_meta,
             vault_delete_local,

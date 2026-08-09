@@ -608,6 +608,11 @@ describe("CredentialsPage desktop vault bridge", () => {
           metaItems = [];
           return { ...vaultState };
         }
+        if (cmd === "vault_reset") {
+          vaultState = { unlocked: false, lockedReason: "not_initialized" };
+          metaItems = [];
+          return { ...vaultState };
+        }
         if (cmd === "vault_import") {
           const id = args?.req?.credentialId ?? "";
           metaItems = [
@@ -731,6 +736,30 @@ describe("CredentialsPage desktop vault bridge", () => {
       const call = invoke.mock.calls.find((c) => c[0] === cmd);
       expect(call?.[1]).toEqual({});
     }
+    unmount();
+  });
+
+  it("requires a warning confirmation before requesting native vault reset", async () => {
+    vaultState = { unlocked: false, lockedReason: "locked" };
+    metaItems = [];
+    installVaultIpc();
+
+    const { unmount } = renderPage([LOCAL_ROW]);
+    const reset = await screen.findByTestId("credentials-vault-reset", {}, FIND);
+    fireEvent.click(reset);
+
+    expect(
+      await screen.findByText(/permanently deletes all local private keys/i, {}, FIND),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /continue to native confirmation/i }));
+
+    await waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith("vault_reset", {});
+    }, FIND);
+    await waitFor(() => {
+      expect(screen.getByTestId("credentials-vault-init")).toBeInTheDocument();
+    }, FIND);
+    expect(invoke).not.toHaveBeenCalledWith("request_cloud_delete", expect.anything());
     unmount();
   });
 

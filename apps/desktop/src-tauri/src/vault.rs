@@ -396,6 +396,31 @@ impl VaultService {
         self.lock_with_reason("locked")
     }
 
+    /// Permanently delete this device's encrypted vault snapshot and salt.
+    /// Cloud credential copies are not accessed by this operation.
+    pub fn reset_local(&self) -> Result<VaultStatus, VaultError> {
+        let _seal = self.claim_sealing()?;
+        let path = self.default_snapshot.clone();
+        let salt = salt_path(&path);
+        if !path.exists() && !salt.exists() {
+            return Err(VaultError::NotInitialized);
+        }
+
+        self.close_all_sessions_before_seal();
+        self.seal_vault("reset")?;
+        remove_file_if_exists(&path)?;
+        remove_file_if_exists(&salt)?;
+        {
+            let mut guard = self.lock_inner()?;
+            *guard = VaultInner::Locked {
+                snapshot_path: path,
+                reason: "not_initialized",
+            };
+        }
+        drop(_seal);
+        self.status_without_idle_seal()
+    }
+
     /// Close SSH sessions (if sink set), then seal Stronghold. Sessions close **before** seal.
     ///
     /// Wait/preemption protocol: never blind-overwrite OPERATING. Wait until gate is IDLE,
@@ -1158,6 +1183,14 @@ fn salt_path(snapshot: &Path) -> PathBuf {
     let mut p = snapshot.as_os_str().to_os_string();
     p.push(".salt");
     PathBuf::from(p)
+}
+
+fn remove_file_if_exists(path: &Path) -> Result<(), VaultError> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(_) => Err(VaultError::Storage),
+    }
 }
 
 fn random_salt() -> Result<Vec<u8>, VaultError> {
