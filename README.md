@@ -27,7 +27,7 @@ OpsMate Desktop is the independent desktop client for [OpsMate](https://github.c
 
 ## Contents
 
-[Product scope](#product-scope) · [Current capabilities](#current-capabilities) · [Security and trust boundaries](#security-and-trust-boundaries) · [Credential custody](#credential-custody) · [High-risk operations](#high-risk-operations) · [Auditability](#auditability) · [Architecture](#architecture) · [Downloads and release status](#downloads-and-release-status) · [Local development](#local-development) · [Repository structure](#repository-structure) · [Security reporting](#security-reporting) · [License](#license)
+[Product scope](#product-scope) · [Current capabilities](#current-capabilities) · [Learn more](#learn-more) · [Security and trust boundaries](#security-and-trust-boundaries) · [Credential custody](#credential-custody) · [High-risk operations](#high-risk-operations) · [Auditability](#auditability) · [Architecture](#architecture) · [Downloads and release status](#downloads-and-release-status) · [Local development](#local-development) · [Repository structure](#repository-structure) · [Security reporting](#security-reporting) · [License](#license)
 
 ## Product scope
 
@@ -70,6 +70,12 @@ Desktop runs a security cutoff after logout, identity changes, host sleep or loc
 Rust creates local SSH connections, verifies host keys, and stores confirmed hosts inside the local `known_hosts` boundary. React can invoke named terminal operations but cannot execute a generic shell command.
 
 Before terminal excerpts reach OpsMate AI, Rust processes sensitive field names, common credential patterns, and output size limits. This control reduces accidental disclosure but does not replace your review of the content you send.
+
+## Learn more
+
+- Product site: https://www.itops.sh/?utm_source=github&utm_medium=readme&utm_campaign=sprint_w1
+- Guide — terminal + AI dual path: https://www.itops.sh/guides/terminal-ai-and-commands/?utm_source=github&utm_medium=readme&utm_campaign=sprint_w1&utm_content=terminal_dual
+- Guide — Telegram remote alerts: https://www.itops.sh/guides/telegram-remote-alerts/?utm_source=github&utm_medium=readme&utm_campaign=sprint_w1&utm_content=telegram_remote
 
 ## Security and trust boundaries
 

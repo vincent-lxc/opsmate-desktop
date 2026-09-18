@@ -27,7 +27,7 @@ OpsMate Desktop 是 [OpsMate](https://github.com/vincent-lxc/ops-ai) 的独立�
 
 ## 目录
 
-[产品定位](#产品定位) · [当前能力](#当前能力) · [安全与信任边界](#安全与信任边界) · [凭据托管模型](#凭据托管模型) · [高风险操作](#高风险操作) · [可审计性](#可审计性) · [架构](#架构) · [下载与发布状态](#下载与发布状态) · [本地开发](#本地开发) · [仓库结构](#仓库结构) · [安全报告](#安全报告) · [许可证](#许可证)
+[产品定位](#产品定位) · [当前能力](#当前能力) · [了解更多](#了解更多) · [安全与信任边界](#安全与信任边界) · [凭据托管模型](#凭据托管模型) · [高风险操作](#高风险操作) · [可审计性](#可审计性) · [架构](#架构) · [下载与发布状态](#下载与发布状态) · [本地开发](#本地开发) · [仓库结构](#仓库结构) · [安全报告](#安全报告) · [许可证](#许可证)
 
 ## 产品定位
 
@@ -70,6 +70,12 @@ SSH 终端与 AI 工作区属于服务器详情上下文，不提供独立的一
 本地 SSH 连接由 Rust 建立。客户端检查主机密钥，并把已确认的主机记录写入本地 `known_hosts` 边界。React 只能发送命名后的终端操作，不能调用通用 shell。
 
 当你把终端片段发送给 OpsMate AI 时，Rust 会先处理敏感字段、常见凭据模式和输出长度限制。该控制降低意外上传风险，但不能替代你对发送内容的检查。
+
+## 了解更多
+
+- 官网：https://www.itops.sh/?utm_source=github&utm_medium=readme&utm_campaign=sprint_w1
+- 指南 — 终端双通道：https://www.itops.sh/guides/terminal-ai-and-commands/?utm_source=github&utm_medium=readme&utm_campaign=sprint_w1&utm_content=terminal_dual
+- 指南 — Telegram 远程告警：https://www.itops.sh/guides/telegram-remote-alerts/?utm_source=github&utm_medium=readme&utm_campaign=sprint_w1&utm_content=telegram_remote
 
 ## 安全与信任边界
 
