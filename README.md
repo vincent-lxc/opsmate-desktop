@@ -48,7 +48,7 @@ OpsMate (itops.sh) is not affiliated with the open-source project opsmate-ai/ops
 
 - Small teams and solo developers without a dedicated ops engineer.
 - Continuous patrols with Telegram alerts.
-- AI is mainly for troubleshooting. Dangerous commands are blocked. After you click Analyze, the command output goes to the cloud AI.
+- AI is mainly for troubleshooting. Dangerous commands are blocked. Low-risk fixes such as restarting a service or rotating logs run automatically by default. After you click Analyze, the command output goes to the cloud AI.
 - Desktop keeps SSH credentials on your device by default.
 - 500 free AI calls a month, unlimited servers.
 
