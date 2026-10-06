@@ -9,7 +9,7 @@
 
   <h1>OpsMate (itops.sh)</h1>
   <h3>OpsMate Desktop</h3>
-  <p>The secure desktop client for OpsMate</p>
+  <p>Desktop client for OpsMate (itops.sh)</p>
   <p><strong>Local credential vault · Native SSH · Cloud monitoring · AI-assisted diagnostics · High-risk confirmations · Auditable releases</strong></p>
   <p>Keep private keys on your device while connecting monitoring, collaboration, and audit workflows to OpsMate.</p>
 
@@ -28,7 +28,7 @@ OpsMate (itops.sh) is not affiliated with the open-source project opsmate-ai/ops
 
 > **Authoritative release source:** `apps/admin` and `apps/desktop` in this repository. Root `src` and `src-tauri` contain legacy history and are not release inputs.
 
-OpsMate Desktop is the independent desktop client for [OpsMate](https://github.com/vincent-lxc/ops-ai). It keeps login sessions, cloud transport, the local credential vault, and local Secure Shell (SSH) connections inside the trusted Rust boundary. The React WebView renders the interface but never receives access tokens, refresh tokens, SSH private keys, or passphrases.
+OpsMate Desktop is the independent desktop client for [OpsMate (itops.sh)](https://www.itops.sh/?utm_source=github&utm_medium=readme&utm_campaign=sprint_w2). It keeps login sessions, cloud transport, the local credential vault, and local Secure Shell (SSH) connections inside the trusted Rust boundary. The React WebView renders the interface but never receives access tokens, refresh tokens, SSH private keys, or passphrases.
 
 ## Contents
 
@@ -78,10 +78,10 @@ Before terminal excerpts reach OpsMate, Rust processes sensitive field names, co
 
 ## Learn more
 
-- Product site: https://www.itops.sh/?utm_source=github&utm_medium=readme&utm_campaign=sprint_w1
-- Guides: https://www.itops.sh/en/guides/?utm_source=github&utm_medium=readme&utm_campaign=sprint_w1&utm_content=guides_hub
-- Guide — terminal + AI dual path: https://www.itops.sh/guides/terminal-ai-and-commands/?utm_source=github&utm_medium=readme&utm_campaign=sprint_w1&utm_content=terminal_dual
-- Guide — Telegram remote alerts: https://www.itops.sh/guides/telegram-remote-alerts/?utm_source=github&utm_medium=readme&utm_campaign=sprint_w1&utm_content=telegram_remote
+- Product site: https://www.itops.sh/?utm_source=github&utm_medium=readme&utm_campaign=sprint_w2
+- Guides: https://www.itops.sh/en/guides/?utm_source=github&utm_medium=readme&utm_campaign=sprint_w2&utm_content=guides_hub
+- Guide — terminal + AI dual path: https://www.itops.sh/guides/terminal-ai-and-commands/?utm_source=github&utm_medium=readme&utm_campaign=sprint_w2&utm_content=terminal_dual
+- Guide — Telegram remote alerts: https://www.itops.sh/guides/telegram-remote-alerts/?utm_source=github&utm_medium=readme&utm_campaign=sprint_w2&utm_content=telegram_remote
 
 ## Security and trust boundaries
 
