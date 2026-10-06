@@ -78,8 +78,8 @@ SSH 终端与 AI 工作区属于服务器详情上下文，不提供独立的一
 
 ## 了解更多
 
-- 官网：https://www.itops.sh/
-- 指南：https://www.itops.sh/guides/
+- 官网：https://www.itops.sh/?utm_source=github&utm_medium=readme&utm_campaign=sprint_w1
+- 指南：https://www.itops.sh/guides/?utm_source=github&utm_medium=readme&utm_campaign=sprint_w1&utm_content=guides_hub
 - 指南 — 终端双通道：https://www.itops.sh/guides/terminal-ai-and-commands/?utm_source=github&utm_medium=readme&utm_campaign=sprint_w1&utm_content=terminal_dual
 - 指南 — Telegram 远程告警：https://www.itops.sh/guides/telegram-remote-alerts/?utm_source=github&utm_medium=readme&utm_campaign=sprint_w1&utm_content=telegram_remote
 

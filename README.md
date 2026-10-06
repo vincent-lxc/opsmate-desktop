@@ -78,8 +78,8 @@ Before terminal excerpts reach OpsMate, Rust processes sensitive field names, co
 
 ## Learn more
 
-- Product site: https://www.itops.sh/
-- Guides: https://www.itops.sh/en/guides/
+- Product site: https://www.itops.sh/?utm_source=github&utm_medium=readme&utm_campaign=sprint_w1
+- Guides: https://www.itops.sh/en/guides/?utm_source=github&utm_medium=readme&utm_campaign=sprint_w1&utm_content=guides_hub
 - Guide — terminal + AI dual path: https://www.itops.sh/guides/terminal-ai-and-commands/?utm_source=github&utm_medium=readme&utm_campaign=sprint_w1&utm_content=terminal_dual
 - Guide — Telegram remote alerts: https://www.itops.sh/guides/telegram-remote-alerts/?utm_source=github&utm_medium=readme&utm_campaign=sprint_w1&utm_content=telegram_remote
 
