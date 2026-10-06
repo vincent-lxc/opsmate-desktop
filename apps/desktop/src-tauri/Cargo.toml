@@ -22,7 +22,7 @@ tauri-plugin-deep-link = "=2.4.9"
 tauri-plugin-opener = "=2.5.4"
 
 # Product SSH — russh 0.62.5 only (forbidden: 0.54.6, ssh2)
-russh = "=0.62.5"
+russh = "=0.63.2"
 
 # Native UX helpers
 rfd = "=0.17.2"
