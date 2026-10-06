@@ -7,8 +7,9 @@
     <img src="apps/desktop/src-tauri/icons/icon.png" alt="OpsMate Logo" width="112" height="112">
   </a>
 
-  <h1>OpsMate Desktop</h1>
-  <h3>The secure desktop client for OpsMate</h3>
+  <h1>OpsMate (itops.sh)</h1>
+  <h3>OpsMate Desktop</h3>
+  <p>Desktop client for OpsMate (itops.sh)</p>
   <p><strong>Local credential vault · Native SSH · Cloud monitoring · AI-assisted diagnostics · High-risk confirmations · Auditable releases</strong></p>
   <p>Keep private keys on your device while connecting monitoring, collaboration, and audit workflows to OpsMate.</p>
 
@@ -21,13 +22,43 @@
   </p>
 </div>
 
+OpsMate (itops.sh) is an AI-assisted server operations tool for small teams and solo developers: an SSH terminal and AI chat on one page and continuous patrols with Telegram alerts.
+
+OpsMate (itops.sh) is not affiliated with the open-source project opsmate-ai/opsmate (tryopsmate.ai).
+
+<p align="center">
+  <a href="https://www.itops.sh/en/download/?utm_source=github&utm_medium=readme&utm_campaign=sprint_w2&utm_content=download"><strong>Download</strong></a>
+  &nbsp;&nbsp;·&nbsp;&nbsp;
+  <a href="https://app.itops.sh/"><strong>Web app</strong></a>
+  &nbsp;&nbsp;·&nbsp;&nbsp;
+  <a href="https://www.itops.sh/en/guides/?utm_source=github&utm_medium=readme&utm_campaign=sprint_w2&utm_content=guides_hub"><strong>Guides</strong></a>
+</p>
+
+<p align="center">
+  <img src="docs/screenshots/20-terminal-ai.jpg" alt="OpsMate (itops.sh) SSH terminal with AI chat" width="760">
+</p>
+<p align="center">
+  <img src="docs/screenshots/13-problem-list.jpg" alt="OpsMate (itops.sh) patrol problem list" width="760">
+</p>
+<p align="center">
+  <img src="docs/screenshots/01-mobile-l2-approval.jpg" alt="OpsMate (itops.sh) approving a restart from the phone" width="280">
+</p>
+
+<h2 id="who-its-for">Who it's for / What it does</h2>
+
+- Small teams and solo developers without a dedicated ops engineer.
+- Continuous patrols with Telegram alerts.
+- AI is mainly for troubleshooting. Dangerous commands are blocked. Low-risk fixes such as restarting a service or rotating logs run automatically by default. After you click Analyze, the command output goes to the cloud AI.
+- Desktop keeps SSH credentials on your device by default.
+- 500 free AI calls a month, unlimited servers.
+
 > **Authoritative release source:** `apps/admin` and `apps/desktop` in this repository. Root `src` and `src-tauri` contain legacy history and are not release inputs.
 
-OpsMate Desktop is the independent desktop client for [OpsMate](https://github.com/vincent-lxc/ops-ai). It keeps login sessions, cloud transport, the local credential vault, and local Secure Shell (SSH) connections inside the trusted Rust boundary. The React WebView renders the interface but never receives access tokens, refresh tokens, SSH private keys, or passphrases.
+OpsMate Desktop is the independent desktop client for [OpsMate (itops.sh)](https://www.itops.sh/). It keeps login sessions, cloud transport, the local credential vault, and local Secure Shell (SSH) connections inside the trusted Rust boundary. The React WebView renders the interface but never receives access tokens, refresh tokens, SSH private keys, or passphrases.
 
 ## Contents
 
-[Product scope](#product-scope) · [Current capabilities](#current-capabilities) · [Learn more](#learn-more) · [Security and trust boundaries](#security-and-trust-boundaries) · [Credential custody](#credential-custody) · [High-risk operations](#high-risk-operations) · [Auditability](#auditability) · [Architecture](#architecture) · [Downloads and release status](#downloads-and-release-status) · [Local development](#local-development) · [Repository structure](#repository-structure) · [Security reporting](#security-reporting) · [License](#license)
+[Who it's for / What it does](#who-its-for) · [Product scope](#product-scope) · [Current capabilities](#current-capabilities) · [Learn more](#learn-more) · [Security and trust boundaries](#security-and-trust-boundaries) · [Credential custody](#credential-custody) · [High-risk operations](#high-risk-operations) · [Auditability](#auditability) · [Architecture](#architecture) · [Downloads and release status](#downloads-and-release-status) · [Local development](#local-development) · [Repository structure](#repository-structure) · [Security reporting](#security-reporting) · [License](#license) · [FAQ](#faq)
 
 ## Product scope
 
@@ -69,13 +100,19 @@ Desktop runs a security cutoff after logout, identity changes, host sleep or loc
 
 Rust creates local SSH connections, verifies host keys, and stores confirmed hosts inside the local `known_hosts` boundary. React can invoke named terminal operations but cannot execute a generic shell command.
 
-Before terminal excerpts reach OpsMate AI, Rust processes sensitive field names, common credential patterns, and output size limits. This control reduces accidental disclosure but does not replace your review of the content you send.
+Before terminal excerpts reach OpsMate, Rust processes sensitive field names, common credential patterns, and output size limits. This control reduces accidental disclosure but does not replace your review of the content you send.
 
 ## Learn more
 
-- Product site: https://www.itops.sh/?utm_source=github&utm_medium=readme&utm_campaign=sprint_w1
-- Guide — terminal + AI dual path: https://www.itops.sh/guides/terminal-ai-and-commands/?utm_source=github&utm_medium=readme&utm_campaign=sprint_w1&utm_content=terminal_dual
-- Guide — Telegram remote alerts: https://www.itops.sh/guides/telegram-remote-alerts/?utm_source=github&utm_medium=readme&utm_campaign=sprint_w1&utm_content=telegram_remote
+- [Docker exit codes explained](https://www.itops.sh/en/guides/docker-exit-codes/?utm_source=github&utm_medium=readme&utm_campaign=sprint_w2&utm_content=docker-exit-codes)
+- [OOMKilled / exit code 137](https://www.itops.sh/en/guides/oom-killed-exit-137/?utm_source=github&utm_medium=readme&utm_campaign=sprint_w2&utm_content=oom-killed-exit-137)
+- [Nginx 502 Bad Gateway](https://www.itops.sh/en/guides/nginx-502-bad-gateway/?utm_source=github&utm_medium=readme&utm_campaign=sprint_w2&utm_content=nginx-502-bad-gateway)
+- [Disk usage spike on Linux](https://www.itops.sh/en/guides/disk-usage-spike/?utm_source=github&utm_medium=readme&utm_campaign=sprint_w2&utm_content=disk-usage-spike)
+- [Revoke server access after a contractor leaves](https://www.itops.sh/en/guides/revoke-server-access-after-contractor-leaves/?utm_source=github&utm_medium=readme&utm_campaign=sprint_w2&utm_content=revoke-server-access-after-contractor-leaves)
+- [No ops engineer? A founder's guide](https://www.itops.sh/en/guides/no-ops-engineer-founder-guide/?utm_source=github&utm_medium=readme&utm_campaign=sprint_w2&utm_content=no-ops-engineer-founder-guide)
+- [Suspicious SSH logins](https://www.itops.sh/en/guides/suspicious-ssh-logins/?utm_source=github&utm_medium=readme&utm_campaign=sprint_w2&utm_content=suspicious-ssh-logins)
+- [Telegram remote alerts](https://www.itops.sh/en/guides/telegram-remote-alerts/?utm_source=github&utm_medium=readme&utm_campaign=sprint_w2&utm_content=telegram-remote-alerts)
+- [Fix a server from your phone via Telegram](https://www.itops.sh/en/guides/fix-server-from-phone-telegram/?utm_source=github&utm_medium=readme&utm_campaign=sprint_w2&utm_content=fix-server-from-phone-telegram)
 
 ## Security and trust boundaries
 
@@ -186,7 +223,9 @@ macOS pre-releases are available from [GitHub Releases](https://github.com/vince
 7. Run `codesign`, Gatekeeper, and stapler validation
 8. Publish the DMG and SHA-256 digest
 
-All `desktop-v*` releases currently belong to the pre-release channel. macOS has signed and notarized artifacts. Public Windows and Linux installers are not available yet. The project does not currently promise a long-term support or general availability channel.
+All `desktop-v*` releases are previews (pre-release channel). macOS has signed and notarized builds, and the latest preview, desktop-v0.1.16, ships a macOS universal DMG from the [download page](https://www.itops.sh/en/download/?utm_source=github&utm_medium=readme&utm_campaign=sprint_w2&utm_content=download). Linux x86_64 AppImage and deb packages exist only for the older [desktop-v0.1.3](https://github.com/vincent-lxc/opsmate-desktop/releases/tag/desktop-v0.1.3) preview (August 2026), and newer builds are macOS only for now. Windows installers are not available yet. The project does not currently promise a long-term support or general availability channel.
+
+Preview testers can report problems in [GitHub Issues](https://github.com/vincent-lxc/opsmate-desktop/issues).
 
 ## Local development
 
@@ -263,3 +302,17 @@ OpsMate Desktop uses the [Mozilla Public License 2.0](LICENSE), SPDX identifier 
 **OpsMate Desktop**: Keep credentials local, keep critical actions human-controlled, keep releases auditable.
 
 </div>
+
+## FAQ
+
+### What is OpsMate (itops.sh)?
+
+OpsMate (itops.sh) helps small teams and people working on their own operate servers. The SSH terminal sits on the same page as the AI conversation, and patrols keep watching and can notify you in Telegram.
+
+### Is it related to opsmate-ai/opsmate?
+
+No. OpsMate (itops.sh) is a separate product.
+
+### Where are my SSH keys stored?
+
+On your device, in the local encrypted vault, by default. They are uploaded only if you explicitly choose cloud hosting.

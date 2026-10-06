@@ -7,8 +7,9 @@
     <img src="apps/desktop/src-tauri/icons/icon.png" alt="OpsMate Logo" width="112" height="112">
   </a>
 
-  <h1>OpsMate Desktop</h1>
-  <h3>OpsMate 的安全桌面入口</h3>
+  <h1>OpsMate（itops.sh）</h1>
+  <h3>OpsMate Desktop</h3>
+  <p>OpsMate（itops.sh）桌面客户端</p>
   <p><strong>本地凭据保险库 · 原生 SSH · 云端监控 · AI 辅助诊断 · 高风险操作确认 · 可审计发布</strong></p>
   <p>把私钥留在设备上，把监控、协作与审计连接到 OpsMate。</p>
 
@@ -21,13 +22,43 @@
   </p>
 </div>
 
+OpsMate（itops.sh）是给小团队和独立开发者用的 AI 服务器运维助手：SSH 终端和 AI 对话在同一页，持续巡检并推送 Telegram 告警。
+
+OpsMate（itops.sh）与开源项目 opsmate-ai/opsmate（tryopsmate.ai）无关。
+
+<p align="center">
+  <a href="https://www.itops.sh/download/?utm_source=github&utm_medium=readme&utm_campaign=sprint_w2&utm_content=download"><strong>下载</strong></a>
+  &nbsp;&nbsp;·&nbsp;&nbsp;
+  <a href="https://app.itops.sh/"><strong>网页版</strong></a>
+  &nbsp;&nbsp;·&nbsp;&nbsp;
+  <a href="https://www.itops.sh/guides/?utm_source=github&utm_medium=readme&utm_campaign=sprint_w2&utm_content=guides_hub"><strong>指南</strong></a>
+</p>
+
+<p align="center">
+  <img src="docs/screenshots/20-terminal-ai.jpg" alt="OpsMate（itops.sh）SSH 终端与 AI 对话" width="760">
+</p>
+<p align="center">
+  <img src="docs/screenshots/13-problem-list.jpg" alt="OpsMate（itops.sh）巡检问题列表" width="760">
+</p>
+<p align="center">
+  <img src="docs/screenshots/01-mobile-l2-approval.jpg" alt="OpsMate（itops.sh）在手机上批准一次重启" width="280">
+</p>
+
+<h2 id="who-its-for">适合谁 / 做什么</h2>
+
+- 没有专职运维工程师的小团队和独立开发者。
+- 持续巡检，并推送 Telegram 告警。
+- AI 以排查为主。危险命令会被拦截。重启服务、日志轮转这类低风险处置默认会自动执行。点「需要分析」之后，命令输出会发给云端 AI。
+- Desktop 的 SSH 凭证默认存在本机。
+- 每月免费 500 次 AI 调用，服务器数量不限。
+
 > **权威发布源：** 本仓库的 `apps/admin` 与 `apps/desktop`。根目录 `src` 与 `src-tauri` 仅保留历史代码，不参与正式构建和发布。
 
-OpsMate Desktop 是 [OpsMate](https://github.com/vincent-lxc/ops-ai) 的独立桌面客户端。它把登录会话、云端传输、本地凭据保险库和本地 Secure Shell（SSH）连接放在 Rust 可信边界内。React WebView 负责界面呈现，不持有访问令牌、刷新令牌、SSH 私钥或口令。
+OpsMate Desktop 是 [OpsMate（itops.sh）](https://www.itops.sh/) 的独立桌面客户端。它把登录会话、云端传输、本地凭据保险库和本地 Secure Shell（SSH）连接放在 Rust 可信边界内。React WebView 负责界面呈现，不持有访问令牌、刷新令牌、SSH 私钥或口令。
 
 ## 目录
 
-[产品定位](#产品定位) · [当前能力](#当前能力) · [了解更多](#了解更多) · [安全与信任边界](#安全与信任边界) · [凭据托管模型](#凭据托管模型) · [高风险操作](#高风险操作) · [可审计性](#可审计性) · [架构](#架构) · [下载与发布状态](#下载与发布状态) · [本地开发](#本地开发) · [仓库结构](#仓库结构) · [安全报告](#安全报告) · [许可证](#许可证)
+[适合谁 / 做什么](#who-its-for) · [产品定位](#产品定位) · [当前能力](#当前能力) · [了解更多](#了解更多) · [安全与信任边界](#安全与信任边界) · [凭据托管模型](#凭据托管模型) · [高风险操作](#高风险操作) · [可审计性](#可审计性) · [架构](#架构) · [下载与发布状态](#下载与发布状态) · [本地开发](#本地开发) · [仓库结构](#仓库结构) · [安全报告](#安全报告) · [许可证](#许可证) · [常见问题](#常见问题)
 
 ## 产品定位
 
@@ -69,13 +100,19 @@ SSH 终端与 AI 工作区属于服务器详情上下文，不提供独立的一
 
 本地 SSH 连接由 Rust 建立。客户端检查主机密钥，并把已确认的主机记录写入本地 `known_hosts` 边界。React 只能发送命名后的终端操作，不能调用通用 shell。
 
-当你把终端片段发送给 OpsMate AI 时，Rust 会先处理敏感字段、常见凭据模式和输出长度限制。该控制降低意外上传风险，但不能替代你对发送内容的检查。
+当你把终端片段发送给 OpsMate 时，Rust 会先处理敏感字段、常见凭据模式和输出长度限制。该控制降低意外上传风险，但不能替代你对发送内容的检查。
 
 ## 了解更多
 
-- 官网：https://www.itops.sh/?utm_source=github&utm_medium=readme&utm_campaign=sprint_w1
-- 指南 — 终端双通道：https://www.itops.sh/guides/terminal-ai-and-commands/?utm_source=github&utm_medium=readme&utm_campaign=sprint_w1&utm_content=terminal_dual
-- 指南 — Telegram 远程告警：https://www.itops.sh/guides/telegram-remote-alerts/?utm_source=github&utm_medium=readme&utm_campaign=sprint_w1&utm_content=telegram_remote
+- [Docker 退出码说明](https://www.itops.sh/guides/docker-exit-codes/?utm_source=github&utm_medium=readme&utm_campaign=sprint_w2&utm_content=docker-exit-codes)
+- [OOMKilled / 退出码 137](https://www.itops.sh/guides/oom-killed-exit-137/?utm_source=github&utm_medium=readme&utm_campaign=sprint_w2&utm_content=oom-killed-exit-137)
+- [Nginx 502 Bad Gateway](https://www.itops.sh/guides/nginx-502-bad-gateway/?utm_source=github&utm_medium=readme&utm_campaign=sprint_w2&utm_content=nginx-502-bad-gateway)
+- [Linux 磁盘占用突然升高](https://www.itops.sh/guides/disk-usage-spike/?utm_source=github&utm_medium=readme&utm_campaign=sprint_w2&utm_content=disk-usage-spike)
+- [外包人员离开后收回服务器访问权限](https://www.itops.sh/guides/revoke-server-access-after-contractor-leaves/?utm_source=github&utm_medium=readme&utm_campaign=sprint_w2&utm_content=revoke-server-access-after-contractor-leaves)
+- [没有专职运维？给创始人的指南](https://www.itops.sh/guides/no-ops-engineer-founder-guide/?utm_source=github&utm_medium=readme&utm_campaign=sprint_w2&utm_content=no-ops-engineer-founder-guide)
+- [可疑的 SSH 登录](https://www.itops.sh/guides/suspicious-ssh-logins/?utm_source=github&utm_medium=readme&utm_campaign=sprint_w2&utm_content=suspicious-ssh-logins)
+- [Telegram 远程告警](https://www.itops.sh/guides/telegram-remote-alerts/?utm_source=github&utm_medium=readme&utm_campaign=sprint_w2&utm_content=telegram-remote-alerts)
+- [用手机通过 Telegram 处理服务器](https://www.itops.sh/guides/fix-server-from-phone-telegram/?utm_source=github&utm_medium=readme&utm_campaign=sprint_w2&utm_content=fix-server-from-phone-telegram)
 
 ## 安全与信任边界
 
@@ -186,7 +223,9 @@ macOS 预发布版本通过 [GitHub Releases](https://github.com/vincent-lxc/ops
 7. 执行 `codesign`、Gatekeeper 和 stapler 验证
 8. 发布 DMG 与 SHA-256 摘要
 
-所有 `desktop-v*` Release 当前均属于预发布渠道。macOS 已提供签名与公证产物；Windows 和 Linux 公共安装包尚未发布。项目尚未承诺长期支持版本或正式通用可用（GA）渠道。
+所有 `desktop-v*` 版本都是预览版（预发布渠道）。macOS 有已签名并公证的构建，最新预览版 desktop-v0.1.16 提供 macOS 通用 DMG，见[下载页](https://www.itops.sh/download/?utm_source=github&utm_medium=readme&utm_campaign=sprint_w2&utm_content=download)。Linux x86_64 的 AppImage 和 deb 只存在于较早的预览版 [desktop-v0.1.3](https://github.com/vincent-lxc/opsmate-desktop/releases/tag/desktop-v0.1.3)（2026 年 8 月），更新的构建目前只有 macOS。Windows 安装包尚未提供。项目尚未承诺长期支持版本或正式通用可用（GA）渠道。
+
+欢迎预览版测试者通过 [GitHub Issues](https://github.com/vincent-lxc/opsmate-desktop/issues) 反馈问题。
 
 ## 本地开发
 
@@ -263,3 +302,17 @@ OpsMate Desktop 使用 [Mozilla Public License 2.0](LICENSE)，SPDX 标识为 `M
 **OpsMate Desktop**: Keep credentials local, keep critical actions human-controlled, keep releases auditable.
 
 </div>
+
+## 常见问题
+
+### OpsMate（itops.sh）是什么？
+
+OpsMate（itops.sh）帮小团队和独自维护服务器的人看管机器。SSH 终端和 AI 对话放在同一页，巡检会一直进行，有情况时通过 Telegram 通知你。
+
+### 它和 opsmate-ai/opsmate 是同一个项目吗？
+
+不是。OpsMate（itops.sh）是另一个产品。
+
+### SSH 密钥存在哪里？
+
+默认在你的设备上，放在本地加密保险库里。只有你明确选择云端托管时才会上传。
