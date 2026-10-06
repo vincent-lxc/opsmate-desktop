@@ -22,7 +22,7 @@
   </p>
 </div>
 
-OpsMate（itops.sh）是给小团队和独立开发者用的 AI 服务器运维助手：SSH 终端和 AI 对话在同一页，持续巡检并推送 Telegram 告警，改动服务器的命令要你确认后才执行。
+OpsMate（itops.sh）是给小团队和独立开发者用的 AI 服务器运维助手：SSH 终端和 AI 对话在同一页，持续巡检并推送 Telegram 告警。
 
 OpsMate（itops.sh）与开源项目 opsmate-ai/opsmate（tryopsmate.ai）无关。
 
@@ -41,14 +41,14 @@ OpsMate（itops.sh）与开源项目 opsmate-ai/opsmate（tryopsmate.ai）无关
   <img src="docs/screenshots/13-problem-list.jpg" alt="OpsMate（itops.sh）巡检问题列表" width="760">
 </p>
 <p align="center">
-  <img src="docs/screenshots/01-mobile-l2-approval.jpg" alt="OpsMate（itops.sh）执行服务器命令前的确认" width="280">
+  <img src="docs/screenshots/01-mobile-l2-approval.jpg" alt="OpsMate（itops.sh）在手机上批准一次重启" width="280">
 </p>
 
 <h2 id="who-its-for">适合谁 / 做什么</h2>
 
 - 没有专职运维工程师的小团队和独立开发者。
 - 持续巡检，并推送 Telegram 告警。
-- AI 以排查为主。危险命令会被拦截，改动服务器的命令需要你点「确认执行」。点「需要分析」之后，命令输出会发给云端 AI。
+- AI 以排查为主。危险命令会被拦截。点「需要分析」之后，命令输出会发给云端 AI。
 - Desktop 的 SSH 凭证默认存在本机。
 - 每月免费 500 次 AI 调用，服务器数量不限。
 
@@ -307,15 +307,11 @@ OpsMate Desktop 使用 [Mozilla Public License 2.0](LICENSE)，SPDX 标识为 `M
 
 ### OpsMate（itops.sh）是什么？
 
-OpsMate（itops.sh）帮小团队和独自维护服务器的人看管机器。SSH 终端和 AI 对话放在同一页，巡检会一直进行，有情况时通过 Telegram 通知你；要改服务器，会先停下来等你点「确认执行」。
+OpsMate（itops.sh）帮小团队和独自维护服务器的人看管机器。SSH 终端和 AI 对话放在同一页，巡检会一直进行，有情况时通过 Telegram 通知你。
 
 ### 它和 opsmate-ai/opsmate 是同一个项目吗？
 
 不是。OpsMate（itops.sh）是另一个产品。
-
-### AI 会不经我确认就改服务器吗？
-
-AI 以排查为主。点「需要分析」后，命令输出会发给云端 AI。危险命令会被拦截，改动服务器的命令只有在你点「确认执行」之后才会运行。
 
 ### SSH 密钥存在哪里？
 

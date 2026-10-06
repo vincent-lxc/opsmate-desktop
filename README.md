@@ -22,7 +22,7 @@
   </p>
 </div>
 
-OpsMate (itops.sh) is an AI-assisted server operations tool for small teams and solo developers: an SSH terminal and AI chat on one page, continuous patrols with Telegram alerts, and your confirmation before commands that change the server.
+OpsMate (itops.sh) is an AI-assisted server operations tool for small teams and solo developers: an SSH terminal and AI chat on one page and continuous patrols with Telegram alerts.
 
 OpsMate (itops.sh) is not affiliated with the open-source project opsmate-ai/opsmate (tryopsmate.ai).
 
@@ -41,14 +41,14 @@ OpsMate (itops.sh) is not affiliated with the open-source project opsmate-ai/ops
   <img src="docs/screenshots/13-problem-list.jpg" alt="OpsMate (itops.sh) patrol problem list" width="760">
 </p>
 <p align="center">
-  <img src="docs/screenshots/01-mobile-l2-approval.jpg" alt="OpsMate (itops.sh) confirmation before a server command runs" width="280">
+  <img src="docs/screenshots/01-mobile-l2-approval.jpg" alt="OpsMate (itops.sh) approving a restart from the phone" width="280">
 </p>
 
 <h2 id="who-its-for">Who it's for / What it does</h2>
 
 - Small teams and solo developers without a dedicated ops engineer.
 - Continuous patrols with Telegram alerts.
-- AI is mainly for troubleshooting. Dangerous commands are blocked, and commands that change the server need you to click Run now. After you click Analyze, the command output goes to the cloud AI.
+- AI is mainly for troubleshooting. Dangerous commands are blocked. After you click Analyze, the command output goes to the cloud AI.
 - Desktop keeps SSH credentials on your device by default.
 - 500 free AI calls a month, unlimited servers.
 
@@ -307,15 +307,11 @@ OpsMate Desktop uses the [Mozilla Public License 2.0](LICENSE), SPDX identifier 
 
 ### What is OpsMate (itops.sh)?
 
-OpsMate (itops.sh) helps small teams and people working on their own operate servers. The SSH terminal sits on the same page as the AI conversation, patrols keep watching and can notify you in Telegram, and a change to the server waits until you click Run now.
+OpsMate (itops.sh) helps small teams and people working on their own operate servers. The SSH terminal sits on the same page as the AI conversation, and patrols keep watching and can notify you in Telegram.
 
 ### Is it related to opsmate-ai/opsmate?
 
 No. OpsMate (itops.sh) is a separate product.
-
-### Does the AI change my server without asking?
-
-The AI is mainly for troubleshooting. After you click Analyze, the command output goes to the cloud AI. Dangerous commands are blocked, and commands that change the server only run after you click Run now.
 
 ### Where are my SSH keys stored?
 
