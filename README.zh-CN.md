@@ -7,8 +7,9 @@
     <img src="apps/desktop/src-tauri/icons/icon.png" alt="OpsMate Logo" width="112" height="112">
   </a>
 
-  <h1>OpsMate Desktop</h1>
-  <h3>OpsMate 的安全桌面入口</h3>
+  <h1>OpsMate（itops.sh）</h1>
+  <h3>OpsMate Desktop</h3>
+  <p>OpsMate 的安全桌面入口</p>
   <p><strong>本地凭据保险库 · 原生 SSH · 云端监控 · AI 辅助诊断 · 高风险操作确认 · 可审计发布</strong></p>
   <p>把私钥留在设备上，把监控、协作与审计连接到 OpsMate。</p>
 
@@ -20,6 +21,10 @@
     <img src="https://img.shields.io/badge/License-MPL--2.0-orange?style=flat-square" alt="MPL-2.0">
   </p>
 </div>
+
+OpsMate（itops.sh）是给小团队和独立开发者用的 AI 服务器运维助手：SSH 终端和 AI 对话在同一页，持续巡检并推送 Telegram 告警，改动服务器的命令要你确认后才执行。
+
+OpsMate（itops.sh）与开源项目 opsmate-ai/opsmate（tryopsmate.ai）无关。
 
 > **权威发布源：** 本仓库的 `apps/admin` 与 `apps/desktop`。根目录 `src` 与 `src-tauri` 仅保留历史代码，不参与正式构建和发布。
 
@@ -69,11 +74,12 @@ SSH 终端与 AI 工作区属于服务器详情上下文，不提供独立的一
 
 本地 SSH 连接由 Rust 建立。客户端检查主机密钥，并把已确认的主机记录写入本地 `known_hosts` 边界。React 只能发送命名后的终端操作，不能调用通用 shell。
 
-当你把终端片段发送给 OpsMate AI 时，Rust 会先处理敏感字段、常见凭据模式和输出长度限制。该控制降低意外上传风险，但不能替代你对发送内容的检查。
+当你把终端片段发送给 OpsMate 时，Rust 会先处理敏感字段、常见凭据模式和输出长度限制。该控制降低意外上传风险，但不能替代你对发送内容的检查。
 
 ## 了解更多
 
-- 官网：https://www.itops.sh/?utm_source=github&utm_medium=readme&utm_campaign=sprint_w1
+- 官网：https://www.itops.sh/
+- 指南：https://www.itops.sh/guides/
 - 指南 — 终端双通道：https://www.itops.sh/guides/terminal-ai-and-commands/?utm_source=github&utm_medium=readme&utm_campaign=sprint_w1&utm_content=terminal_dual
 - 指南 — Telegram 远程告警：https://www.itops.sh/guides/telegram-remote-alerts/?utm_source=github&utm_medium=readme&utm_campaign=sprint_w1&utm_content=telegram_remote
 

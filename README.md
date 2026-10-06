@@ -7,8 +7,9 @@
     <img src="apps/desktop/src-tauri/icons/icon.png" alt="OpsMate Logo" width="112" height="112">
   </a>
 
-  <h1>OpsMate Desktop</h1>
-  <h3>The secure desktop client for OpsMate</h3>
+  <h1>OpsMate (itops.sh)</h1>
+  <h3>OpsMate Desktop</h3>
+  <p>The secure desktop client for OpsMate</p>
   <p><strong>Local credential vault · Native SSH · Cloud monitoring · AI-assisted diagnostics · High-risk confirmations · Auditable releases</strong></p>
   <p>Keep private keys on your device while connecting monitoring, collaboration, and audit workflows to OpsMate.</p>
 
@@ -20,6 +21,10 @@
     <img src="https://img.shields.io/badge/License-MPL--2.0-orange?style=flat-square" alt="MPL-2.0">
   </p>
 </div>
+
+OpsMate (itops.sh) is an AI-assisted server operations tool for small teams and solo developers: an SSH terminal and AI chat on one page, continuous patrols with Telegram alerts, and your confirmation before commands that change the server.
+
+OpsMate (itops.sh) is not affiliated with the open-source project opsmate-ai/opsmate (tryopsmate.ai).
 
 > **Authoritative release source:** `apps/admin` and `apps/desktop` in this repository. Root `src` and `src-tauri` contain legacy history and are not release inputs.
 
@@ -69,11 +74,12 @@ Desktop runs a security cutoff after logout, identity changes, host sleep or loc
 
 Rust creates local SSH connections, verifies host keys, and stores confirmed hosts inside the local `known_hosts` boundary. React can invoke named terminal operations but cannot execute a generic shell command.
 
-Before terminal excerpts reach OpsMate AI, Rust processes sensitive field names, common credential patterns, and output size limits. This control reduces accidental disclosure but does not replace your review of the content you send.
+Before terminal excerpts reach OpsMate, Rust processes sensitive field names, common credential patterns, and output size limits. This control reduces accidental disclosure but does not replace your review of the content you send.
 
 ## Learn more
 
-- Product site: https://www.itops.sh/?utm_source=github&utm_medium=readme&utm_campaign=sprint_w1
+- Product site: https://www.itops.sh/
+- Guides: https://www.itops.sh/en/guides/
 - Guide — terminal + AI dual path: https://www.itops.sh/guides/terminal-ai-and-commands/?utm_source=github&utm_medium=readme&utm_campaign=sprint_w1&utm_content=terminal_dual
 - Guide — Telegram remote alerts: https://www.itops.sh/guides/telegram-remote-alerts/?utm_source=github&utm_medium=readme&utm_campaign=sprint_w1&utm_content=telegram_remote
 
