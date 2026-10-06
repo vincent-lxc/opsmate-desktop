@@ -25,7 +25,7 @@ tauri-plugin-deep-link = "=2.4.9"
 # Task 8A1: Stronghold library only — NEVER register plugin or grant WebView capability.
 tauri-plugin-stronghold = "=2.3.1"
 # Private-key parse + fingerprint (no ssh2).
-russh = "=0.62.5"
+russh = "=0.63.2"
 # Native PEM file picker (macOS secure prompts use rfd + objc2).
 rfd = "=0.17.2"
 # Outer Argon2id for vault password (exact pin matching Stronghold tree).
