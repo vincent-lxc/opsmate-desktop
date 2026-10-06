@@ -212,8 +212,6 @@ This repository is an independent Git project. It does not embed `ops-ai/apps/ad
 
 ## Downloads and release status
 
-The latest prerelease (desktop-v0.1.16) ships a macOS universal DMG from the [download page](https://www.itops.sh/en/download/?utm_source=github&utm_medium=readme&utm_campaign=sprint_w2&utm_content=download).
-
 macOS pre-releases are available from [GitHub Releases](https://github.com/vincent-lxc/opsmate-desktop/releases). The release pipeline builds a universal DMG for Apple Silicon and Intel, then applies these gates:
 
 1. Install locked dependencies and run frontend tests
@@ -225,7 +223,9 @@ macOS pre-releases are available from [GitHub Releases](https://github.com/vince
 7. Run `codesign`, Gatekeeper, and stapler validation
 8. Publish the DMG and SHA-256 digest
 
-All `desktop-v*` releases currently belong to the pre-release channel. macOS has signed and notarized artifacts. Public Windows and Linux installers are not available yet. The project does not currently promise a long-term support or general availability channel.
+All `desktop-v*` releases are previews (pre-release channel). macOS has signed and notarized builds, and the latest preview, desktop-v0.1.16, ships a macOS universal DMG from the [download page](https://www.itops.sh/en/download/?utm_source=github&utm_medium=readme&utm_campaign=sprint_w2&utm_content=download). Linux x86_64 AppImage and deb packages exist only for the older [desktop-v0.1.3](https://github.com/vincent-lxc/opsmate-desktop/releases/tag/desktop-v0.1.3) preview (August 2026), and newer builds are macOS only for now. Windows installers are not available yet. The project does not currently promise a long-term support or general availability channel.
+
+Preview testers can report problems in [GitHub Issues](https://github.com/vincent-lxc/opsmate-desktop/issues).
 
 ## Local development
 

@@ -212,8 +212,6 @@ React WebView
 
 ## 下载与发布状态
 
-最新预发布版（desktop-v0.1.16）提供 macOS 通用 DMG，见[下载页](https://www.itops.sh/download/?utm_source=github&utm_medium=readme&utm_campaign=sprint_w2&utm_content=download)。
-
 macOS 预发布版本通过 [GitHub Releases](https://github.com/vincent-lxc/opsmate-desktop/releases) 提供。发布流水线构建 Apple Silicon 与 Intel 通用 DMG，并执行以下门禁：
 
 1. 安装锁定依赖并运行前端测试
@@ -225,7 +223,9 @@ macOS 预发布版本通过 [GitHub Releases](https://github.com/vincent-lxc/ops
 7. 执行 `codesign`、Gatekeeper 和 stapler 验证
 8. 发布 DMG 与 SHA-256 摘要
 
-所有 `desktop-v*` Release 当前均属于预发布渠道。macOS 已提供签名与公证产物；Windows 和 Linux 公共安装包尚未发布。项目尚未承诺长期支持版本或正式通用可用（GA）渠道。
+所有 `desktop-v*` 版本都是预览版（预发布渠道）。macOS 有已签名并公证的构建，最新预览版 desktop-v0.1.16 提供 macOS 通用 DMG，见[下载页](https://www.itops.sh/download/?utm_source=github&utm_medium=readme&utm_campaign=sprint_w2&utm_content=download)。Linux x86_64 的 AppImage 和 deb 只存在于较早的预览版 [desktop-v0.1.3](https://github.com/vincent-lxc/opsmate-desktop/releases/tag/desktop-v0.1.3)（2026 年 8 月），更新的构建目前只有 macOS。Windows 安装包尚未提供。项目尚未承诺长期支持版本或正式通用可用（GA）渠道。
+
+欢迎预览版测试者通过 [GitHub Issues](https://github.com/vincent-lxc/opsmate-desktop/issues) 反馈问题。
 
 ## 本地开发
 
